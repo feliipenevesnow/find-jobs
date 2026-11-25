@@ -1,0 +1,53 @@
+# Palavras enviadas aos portais e termos que identificam a sua área na triagem.
+search_terms: ["desenvolvedor", "full stack", "engenheiro de IA", "AI engineer", "trainee desenvolvimento"]
+roles:
+  - desenvolvedor
+  - desenvolvedora
+  - desenvolvimento
+  - developer
+  - dev
+  - programador
+  - programadora
+  - programação
+  - frontend
+  - front end
+  - backend
+  - back end
+  - full stack
+  - fullstack
+  - software engineer
+  - engenharia de software
+  - engenheiro de software
+  - engenheira de software
+  - engenheiro de IA
+  - engenheira de IA
+  - engenheiro de inteligência artificial
+  - engenheira de inteligência artificial
+  - AI engineer
+  - generative AI engineer
+  - machine learning engineer
+  - LLM engineer
+# A nota combina esta stack com as evidências por requisito do currículo local.
+stack: [Python, FastAPI, JavaScript, TypeScript, React, SQL, PostgreSQL, MySQL, RAG, LangChain, LangGraph, Azure, Docker, Git, Java, Spring Boot]
+positive: ["júnior", "jr", "trainee", "estágio", "estagiário", "estagiária", "intern", "internship", "entry level", "iniciante", "associado", "dev I", "desenvolvedor I", "developer I", "engineer I", "aprendiz"]
+blocked: ["sênior", "sr", "pleno", "pl", "especialista", "tech lead", "staff", "principal", "arquiteto", "arquiteta", "coordenador", "coordenadora", "gerente"]
+excluded_areas: ["programação de TV", "programação de televisão", "programação de rádio", "desenvolvimento de negócios", "desenvolvimento de embalagens", "desenvolvimento de pessoas", "desenvolvimento de mercado"]
+# Uma coleta por manhã, com duas horas de sobreposição para pequenos atrasos.
+hours: 26
+min_score: 6.5
+# Orçamento local compartilhado pelas rodadas com IA remota (janela móvel).
+ai_budget:
+  requests_per_24h: 1000
+  tokens_per_24h: 1000000
+  tokens_per_minute: 25000
+remote: true
+# Vazia aceita todas as cidades. Com cidades preenchidas, inclui essas cidades e vagas remotas se remote=true.
+cities: []
+sources: [gupy, github, linkedin, indeed, infojobs, vagascom, nube]
+github_repos: [backend-br/vagas, frontendbr/vagas, pydevbr/vagas]
+# Slugs usados apenas nas páginas de busca do InfoJobs. Ajuste para a sua região.
+infojobs_cities: ["sao-paulo,-sp"]
+# Limite por termo/repositório. Nube lê o sitemap inteiro para comparar inventários.
+results_per_search: 30
+database: data/vagas.sqlite3
+resume: curriculo.local.md
