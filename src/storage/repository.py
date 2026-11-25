@@ -10,6 +10,7 @@ from src.core.models import Analysis, Decision, JobPosting, Status
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY,
+    url TEXT UNIQUE,
     posting TEXT NOT NULL,
     decision TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'nova',
@@ -52,6 +53,24 @@ class Repository:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        self._migrate_unique_url()
+
+    def _migrate_unique_url(self) -> None:
+        cols = {row["name"] for row in self.db.execute("PRAGMA table_info(jobs)").fetchall()}
+        with self.db:
+            if "url" not in cols:
+                self.db.execute("ALTER TABLE jobs ADD COLUMN url TEXT")
+            missing = self.db.execute("SELECT id, posting FROM jobs WHERE url IS NULL").fetchall()
+            for row in missing:
+                url = JobPosting.model_validate_json(row["posting"]).url
+                owner = self.db.execute("SELECT id FROM jobs WHERE url=? AND id!=?", (url, row["id"])).fetchone()
+                if owner:
+                    self.db.execute("UPDATE OR IGNORE aliases SET job_id=? WHERE job_id=?", (owner["id"], row["id"]))
+                    self.db.execute("DELETE FROM aliases WHERE job_id=?", (row["id"],))
+                    self.db.execute("DELETE FROM jobs WHERE id=?", (row["id"],))
+                else:
+                    self.db.execute("UPDATE jobs SET url=? WHERE id=?", (url, row["id"]))
+            self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS jobs_url_unique ON jobs(url)")
 
     def reserve_ai(self, fingerprint: str, provider: str, tokens: int, limits: AiBudget, preview: bool):
         """Reserva antes do HTTP. Outra execução vê a reserva mesmo após uma queda."""
@@ -101,9 +120,11 @@ class Repository:
     def lookup(self, job: JobPosting):
         keys = ("url:" + job.url, "id:" + job.id_hash)
         return self.db.execute(
-            """SELECT DISTINCT j.* FROM jobs j JOIN aliases a ON a.job_id=j.id
-               WHERE a.alias IN (?,?) ORDER BY (delivery='sent') DESC,
-               (delivery='uncertain') DESC, (delivery='pending') DESC, id""", keys
+            """SELECT DISTINCT j.* FROM jobs j LEFT JOIN aliases a ON a.job_id=j.id
+               WHERE j.url=? OR a.alias IN (?,?)
+               ORDER BY (j.eligible_at IS NOT NULL) DESC, (j.delivery='sent') DESC,
+               (j.delivery='uncertain') DESC, (j.delivery='pending') DESC, j.id""",
+            (job.url, *keys),
         ).fetchall()
 
     def record(self, job: JobPosting, decision: Decision, now: datetime, *, keep_approved: bool = False) -> int:
@@ -112,29 +133,59 @@ class Repository:
             self.db.execute("BEGIN IMMEDIATE")
             matches = self.lookup(job)
             if not matches:
-                row = self.db.execute("INSERT INTO jobs(posting,decision,collected_at) VALUES(?,?,?)",
-                                      (job.model_dump_json(), decision.model_dump_json(), stamp))
+                row = self.db.execute(
+                    "INSERT INTO jobs(url,posting,decision,collected_at) VALUES(?,?,?,?)",
+                    (job.url, job.model_dump_json(), decision.model_dump_json(), stamp),
+                )
                 job_id = row.lastrowid
                 delivery = "filtered"
+                was_approved = False
             else:
                 keep = matches[0]
                 job_id, delivery = keep["id"], keep["delivery"]
-                # Uma URL antes anônima pode ganhar empresa e unir dois registros.
+                was_approved = keep["eligible_at"] is not None
+                # Uma URL antes anônima pode ganhar empresa e unir dois registros sem duplicar links.
                 for duplicate in matches[1:]:
-                    self.db.execute("UPDATE aliases SET job_id=? WHERE job_id=?", (job_id, duplicate["id"]))
+                    self.db.execute("UPDATE OR IGNORE aliases SET job_id=? WHERE job_id=?", (job_id, duplicate["id"]))
+                    self.db.execute("DELETE FROM aliases WHERE job_id=?", (duplicate["id"],))
                     if keep["status"] == "nova" and duplicate["status"] != "nova":
                         self.db.execute("UPDATE jobs SET status=? WHERE id=?", (duplicate["status"], job_id))
+                    if not was_approved and duplicate["eligible_at"] is not None:
+                        self.db.execute(
+                            "UPDATE jobs SET eligible_at=?, delivery=? WHERE id=?",
+                            (duplicate["eligible_at"], duplicate["delivery"], job_id),
+                        )
+                        was_approved = True
+                        delivery = duplicate["delivery"]
                     self.db.execute("DELETE FROM jobs WHERE id=?", (duplicate["id"],))
-            self.db.executemany("INSERT OR IGNORE INTO aliases VALUES(?,?,?)",
-                                [(key, job_id, job.source) for key in ("url:"+job.url, "id:"+job.id_hash)])
-            same_url = bool(matches and JobPosting.model_validate_json(matches[0]["posting"]).url == job.url)
-            if delivery == "filtered" or (not keep_approved and (decision.eligible or same_url)):
+                if not keep["url"]:
+                    self.db.execute("UPDATE OR IGNORE jobs SET url=? WHERE id=?", (job.url, job_id))
+            self.db.executemany(
+                "INSERT OR IGNORE INTO aliases VALUES(?,?,?)",
+                [(key, job_id, job.source) for key in ("url:" + job.url, "id:" + job.id_hash)],
+            )
+            if was_approved:
+                # Vaga já aprovada e salva nunca é apagada do histórico em buscas futuras.
+                if decision.eligible:
+                    approved_state = delivery if delivery in ("sent", "uncertain") else "pending"
+                    self.db.execute(
+                        "UPDATE jobs SET posting=?, decision=?, delivery=? WHERE id=?",
+                        (job.model_dump_json(), decision.model_dump_json(), approved_state, job_id),
+                    )
+            elif delivery == "filtered" or (not keep_approved and decision.eligible):
                 approved_state = delivery if delivery in ("sent", "uncertain") else "pending"
                 self.db.execute(
                     """UPDATE jobs SET posting=?, decision=?, delivery=?,
                        eligible_at=CASE WHEN ? THEN COALESCE(eligible_at, ?) ELSE NULL END WHERE id=?""",
-                    (job.model_dump_json(), decision.model_dump_json(), approved_state if decision.eligible else "filtered",
-                     decision.eligible, stamp, job_id))
+                    (
+                        job.model_dump_json(),
+                        decision.model_dump_json(),
+                        approved_state if decision.eligible else "filtered",
+                        decision.eligible,
+                        stamp,
+                        job_id,
+                    ),
+                )
         return job_id
 
     def approved(self):

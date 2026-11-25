@@ -14,20 +14,19 @@ from src.filters.rules import contains_any
 class HtmlBoard(BaseCollector):
     def queries(self):
         for term in self.ctx.settings.search_terms:
-            slug = normalized(term).replace(" ", "-")
             if self.name == "infojobs":
-                for city in self.ctx.settings.infojobs_cities:
-                    yield f"{slug}/{city}"
+                yield term.strip()
             else:
-                yield slug
+                yield normalized(term).replace(" ", "-")
 
     async def fetch(self, query: str) -> AsyncIterator[JobPosting]:
         if self.name == "infojobs":
-            slug, city = query.split("/")
-            response = await self.get(f"{parsers.INFOJOBS_BASE}/empregos-{slug}-em-{city}.aspx",
-                                      params={"campo": "griddate", "orden": "desc"})
+            response = await self.get(
+                f"{parsers.INFOJOBS_BASE}/empregos.aspx",
+                params={"palabra": query, "campo": "griddate", "orden": "desc"},
+            )
             soup = BeautifulSoup(response.text, "html.parser")
-            rows = parsers._extrair_jsonld(soup) or parsers._extrair_cards(soup, city.replace(",-", ", ").replace("-", " "))
+            rows = parsers._extrair_jsonld(soup) or parsers._extrair_cards(soup, "Brasil")
         else:
             response = await self.get(f"{parsers.VAGASCOM_BASE}/vagas-de-{query}", params={"ordenar_por": "mais_recentes"})
             rows = parsers._vc_extrair_cards(response.text)

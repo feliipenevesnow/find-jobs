@@ -24,6 +24,8 @@ def read_profile(path: Path) -> tuple[str, list[Evidence]]:
         text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return "", []
+    if "Modelo para uma instalação nova." in text:
+        return "", []
     section = re.search(r"^" + re.escape(EVIDENCE_HEADING) + r"[ \t]*$", text, re.M)
     if not section:
         return text, []

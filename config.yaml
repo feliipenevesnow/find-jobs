@@ -1,5 +1,13 @@
 # Palavras enviadas aos portais e termos que identificam a sua área na triagem.
-search_terms: ["desenvolvedor", "full stack", "engenheiro de IA", "AI engineer", "trainee desenvolvimento"]
+search_terms:
+  - "desenvolvedor junior"
+  - "desenvolvedor jr"
+  - "estagio desenvolvimento"
+  - "programador junior"
+  - "full stack junior"
+  - "desenvolvedor"
+  - "engenheiro de IA"
+  - "trainee desenvolvimento"
 roles:
   - desenvolvedor
   - desenvolvedora
@@ -23,6 +31,9 @@ roles:
   - engenheira de IA
   - engenheiro de inteligência artificial
   - engenheira de inteligência artificial
+  - analista de inteligência artificial
+  - desenvolvedor de inteligência artificial
+  - analista de sistemas
   - AI engineer
   - generative AI engineer
   - machine learning engineer
@@ -31,10 +42,10 @@ roles:
 stack: [Python, FastAPI, JavaScript, TypeScript, React, SQL, PostgreSQL, MySQL, RAG, LangChain, LangGraph, Azure, Docker, Git, Java, Spring Boot]
 positive: ["júnior", "jr", "trainee", "estágio", "estagiário", "estagiária", "intern", "internship", "entry level", "iniciante", "associado", "dev I", "desenvolvedor I", "developer I", "engineer I", "aprendiz"]
 blocked: ["sênior", "sr", "pleno", "pl", "especialista", "tech lead", "staff", "principal", "arquiteto", "arquiteta", "coordenador", "coordenadora", "gerente"]
-excluded_areas: ["programação de TV", "programação de televisão", "programação de rádio", "desenvolvimento de negócios", "desenvolvimento de embalagens", "desenvolvimento de pessoas", "desenvolvimento de mercado"]
-# Uma coleta por manhã, com duas horas de sobreposição para pequenos atrasos.
-hours: 26
-min_score: 6.5
+excluded_areas: ["programação de TV", "programação de televisão", "programação de rádio", "desenvolvimento de negócios", "desenvolvimento de embalagens", "desenvolvimento de pessoas", "desenvolvimento de mercado", "analista de atendimento"]
+# Duas coletas diárias automáticas: manhã (dia anterior) e fim do dia (dia atual).
+hours: 36
+min_score: 3.0
 # Orçamento local compartilhado pelas rodadas com IA remota (janela móvel).
 ai_budget:
   requests_per_24h: 1000

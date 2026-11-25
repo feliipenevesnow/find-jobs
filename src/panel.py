@@ -47,8 +47,9 @@ def write_panel(repo: Repository, directory: Path) -> Path:
     if run:
         date = datetime.fromisoformat(run["finished"]).astimezone()
         updated = f"Última busca em {date:%d/%m/%Y às %H:%M}"
-        summary = (f'{run["listings"]} anúncios lidos em uma janela de {run["hours"]} h. '
-                   f'{run["sources_ok"]} de {run["sources_total"]} fontes responderam.')
+        summary = (f'{run["listings"]} anúncios analisados na janela de {run["hours"]} h · '
+                   f'{run["sources_ok"]} de {run["sources_total"]} portais consultados responderam '
+                   f'(Gupy, LinkedIn, Indeed, InfoJobs, Vagas.com, GitHub e Nube).')
         if run["errors"]:
             summary += f' Consultas com erro: {run["errors"]}.'
         empty = ("Nenhuma oportunidade passou pelos filtros até agora." if run["sources_ok"] else
