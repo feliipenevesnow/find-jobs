@@ -12,12 +12,12 @@ $tasks = @(
     @{
         Name = "FindJobs - Manha Dia Anterior ($shortUser)"
         Time = $HorarioManha
-        Args = ('"{0}" --hours 36' -f $main)
+        Args = ('"{0}" --alarme manha' -f $main)
     },
     @{
         Name = "FindJobs - Fim do Dia Atual ($shortUser)"
         Time = $HorarioNoite
-        Args = ('"{0}" --hours 20' -f $main)
+        Args = ('"{0}" --alarme noite' -f $main)
     }
 )
 

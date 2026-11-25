@@ -42,10 +42,15 @@ def test_http_server_serves_live_panel_and_updates_status(tmp_path, job, setting
             data = json.loads(resp.read().decode("utf-8"))
             assert data["ok"] is True
 
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/favicon.ico", timeout=5) as resp:
+            assert resp.status == 200
+            assert "image/svg+xml" in resp.headers.get("Content-Type", "")
+
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
             assert resp.status == 200
             html = resp.read().decode("utf-8")
             assert job.title in html
+            assert 'rel="icon"' in html
             assert "Buscar vagas agora" in html
             assert "Alarmes diários ativos" in html
 
@@ -113,3 +118,19 @@ def test_morning_and_evening_alarm_windows():
     # Fim do dia às 18:10 (se manhã NÃO rodou) expande para cobrir o dia anterior também (42h+)
     e_hours_catchup = server.compute_evening_hours(evening, morning_done_today=False)
     assert e_hours_catchup >= 43
+
+
+def test_graduated_profile_blocks_internships_and_apprenticeships(job, settings):
+    from src.filters.rules import evaluate_fit
+
+    for title in (
+        "Estágio em Desenvolvimento de Software",
+        "Software Developer Intern - Brazil",
+        "Aprendiz Paulista - Desenvolvimento de Sistemas",
+    ):
+        res = evaluate_fit(job.model_copy(update={"title": title}), settings)
+        assert not res.eligible
+
+    assert evaluate_fit(job.model_copy(update={"title": "Desenvolvedor Backend Júnior"}), settings).eligible
+    assert evaluate_fit(job.model_copy(update={"title": "Trainee em Engenharia de Software"}), settings).eligible
+

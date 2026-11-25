@@ -33,6 +33,12 @@ STATUSES = ("nova", "salva", "candidatado", "entrevista", "descartada")
 log = logging.getLogger("findjobs.server")
 
 HUNT_LOCK = threading.Lock()
+FAVICON_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    b'<rect width="64" height="64" rx="14" fill="#175841"/>'
+    b'<path d="M24 20v-3a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v3h8a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V24a4 4 0 0 1 4-4h8zm4-2v2h8v-2h-8zm-12 9v7h32v-7H16zm0 11v8h32v-8H36v2a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2H16z" fill="#f6f7f0"/>'
+    b'</svg>'
+)
 SERVER_STATE = {
     "hunting": False,
     "started_at": None,
@@ -374,6 +380,11 @@ def run_hunt_sync(
         with closing(sqlite3.connect(gate, timeout=1800)) as lock:
             lock.execute("BEGIN EXCLUSIVE")
             repo = Repository(settings.database)
+            if alarm_slot:
+                cp = repo.checkpoint(alarm_slot)
+                if cp and cp.astimezone(BR).date() == datetime.now(BR).date():
+                    write_panel(repo, settings.database.parent)
+                    return True
             log.info("Iniciando coleta de vagas (motivo=%s, janela=%dh)...", SERVER_STATE["current_reason"], hours)
             code = asyncio.run(hunt(settings, repo, hours, False, skip_ai, console))
             if code == 0 and alarm_slot:
@@ -514,9 +525,8 @@ def make_handler(config_path: Path):
             parsed = urlparse(self.path)
             route = parsed.path
 
-            if route == "/favicon.ico":
-                self.send_response(HTTPStatus.NO_CONTENT)
-                self.end_headers()
+            if route in ("/favicon.ico", "/favicon.svg"):
+                self._send_bytes(HTTPStatus.OK, FAVICON_SVG, "image/svg+xml", head_only=head_only)
                 return
 
             if route == "/health":

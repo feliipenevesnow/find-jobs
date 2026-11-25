@@ -2,9 +2,9 @@
 search_terms:
   - "desenvolvedor junior"
   - "desenvolvedor jr"
-  - "estagio desenvolvimento"
   - "programador junior"
   - "full stack junior"
+  - "engenheiro de software junior"
   - "desenvolvedor"
   - "engenheiro de IA"
   - "trainee desenvolvimento"
@@ -40,8 +40,8 @@ roles:
   - LLM engineer
 # A nota combina esta stack com as evidências por requisito do currículo local.
 stack: [Python, FastAPI, JavaScript, TypeScript, React, SQL, PostgreSQL, MySQL, RAG, LangChain, LangGraph, Azure, Docker, Git, Java, Spring Boot]
-positive: ["júnior", "jr", "trainee", "estágio", "estagiário", "estagiária", "intern", "internship", "entry level", "iniciante", "associado", "dev I", "desenvolvedor I", "developer I", "engineer I", "aprendiz"]
-blocked: ["sênior", "sr", "pleno", "pl", "especialista", "tech lead", "staff", "principal", "arquiteto", "arquiteta", "coordenador", "coordenadora", "gerente"]
+positive: ["júnior", "jr", "junior", "trainee", "entry level", "iniciante", "associado", "associate", "dev I", "desenvolvedor I", "developer I", "engineer I", "recém-formado"]
+blocked: ["sênior", "sr", "pleno", "pl", "especialista", "tech lead", "staff", "principal", "arquiteto", "arquiteta", "coordenador", "coordenadora", "gerente", "estágio", "estagio", "estagiário", "estagiária", "estagiario", "estagiaria", "intern", "internship", "aprendiz", "jovem aprendiz"]
 excluded_areas: ["programação de TV", "programação de televisão", "programação de rádio", "desenvolvimento de negócios", "desenvolvimento de embalagens", "desenvolvimento de pessoas", "desenvolvimento de mercado", "analista de atendimento"]
 # Duas coletas diárias automáticas: manhã (dia anterior) e fim do dia (dia atual).
 hours: 36
@@ -54,7 +54,7 @@ ai_budget:
 remote: true
 # Vazia aceita todas as cidades. Com cidades preenchidas, inclui essas cidades e vagas remotas se remote=true.
 cities: []
-sources: [gupy, github, linkedin, indeed, infojobs, vagascom, nube]
+sources: [gupy, github, linkedin, indeed, infojobs, vagascom]
 github_repos: [backend-br/vagas, frontendbr/vagas, pydevbr/vagas]
 # Slugs usados apenas nas páginas de busca do InfoJobs. Ajuste para a sua região.
 infojobs_cities: ["sao-paulo,-sp"]

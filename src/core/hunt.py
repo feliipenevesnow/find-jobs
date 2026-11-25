@@ -14,7 +14,7 @@ from src.collectors.gupy import Gupy
 from src.collectors.jobspy import JobSpy
 from src.collectors.portals import HtmlBoard, Nube
 from src.core.config import Settings
-from src.core.models import Decision, JobPosting
+from src.core.models import Decision, JobPosting, plain
 from src.filters.ai import assess
 from src.filters.profile import read_profile
 from src.filters.rules import TIME_FILTERS, evaluate
@@ -69,6 +69,9 @@ async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip
                     async with review_lock:
                         decision = await assess(private, provider, resume, job, decision,
                                                 repo=repo, limits=settings.ai_budget, preview=dry)
+                if decision.eligible and decision.analysis and decision.analysis.senioridade_real == "estagio":
+                    if any(plain(b) == "estagio" for b in settings.blocked):
+                        decision = decision.model_copy(update={"eligible": False, "reason": "Vaga de estágio bloqueada pelo perfil"})
                 if decision.eligible and decision.score < settings.min_score:
                     decision = decision.model_copy(update={"eligible": False, "reason": "Nota abaixo do mínimo"})
                 repo.record(job, decision, observed, keep_approved=decision.reason in TIME_FILTERS)

@@ -1,13 +1,15 @@
 import argparse
 import asyncio
 import logging
+import math
 import os
 import sqlite3
 import sys
 import webbrowser
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import load_dotenv
@@ -65,6 +67,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Simular a coleta em memória")
     mode.add_argument("--diaria", action="store_true", help="Coletar se ainda não houve uma busca bem-sucedida hoje")
+    mode.add_argument("--alarme", choices=("manha", "noite"), help="Executar janela automática da manhã (dia anterior) ou noite (dia atual)")
     mode.add_argument("--painel", action="store_true", help="Gerar o painel com o histórico já salvo")
     parser.add_argument("--abrir", action="store_true", help="Abrir o painel no navegador ao concluir")
     mode.add_argument("--list", action="store_true", help="Mostrar as últimas 50 oportunidades aprovadas")
@@ -116,11 +119,30 @@ def main() -> int:
             gate = settings.database.with_name(settings.database.name + ".lock")
             with closing(sqlite3.connect(gate, timeout=1800)) as lock:
                 lock.execute("BEGIN EXCLUSIVE")
-                last = repo.last_hunt()
-                done_today = (last and last["sources_ok"] and
-                              datetime.fromisoformat(last["finished"]).astimezone().date() == datetime.now().date())
-                if not args.diaria or not done_today:
-                    code = asyncio.run(hunt(settings, repo, hours, False, args.skip_ai, console))
+                if args.alarme:
+                    br = ZoneInfo("America/Sao_Paulo")
+                    now_br = datetime.now(br)
+                    slot_key = f"alarme_{args.alarme}"
+                    cp = repo.checkpoint(slot_key)
+                    slot_done = bool(cp and cp.astimezone(br).date() == now_br.date())
+                    if not slot_done:
+                        cp_m = repo.checkpoint("alarme_manha")
+                        morning_done = bool(cp_m and cp_m.astimezone(br).date() == now_br.date())
+                        if args.alarme == "manha" or not morning_done:
+                            y_mid = datetime.combine(now_br.date() - timedelta(days=1), dt_time(0, 0), tzinfo=br)
+                            hours = max(26, min(72, math.ceil((now_br - y_mid).total_seconds() / 3600) + 2))
+                        else:
+                            t_mid = datetime.combine(now_br.date(), dt_time(0, 0), tzinfo=br)
+                            hours = max(12, min(30, math.ceil((now_br - t_mid).total_seconds() / 3600) + 1))
+                        code = asyncio.run(hunt(settings, repo, hours, False, args.skip_ai, console))
+                        if code == 0:
+                            repo.complete(slot_key, datetime.now(timezone.utc))
+                else:
+                    last = repo.last_hunt()
+                    done_today = (last and last["sources_ok"] and
+                                  datetime.fromisoformat(last["finished"]).astimezone().date() == datetime.now().date())
+                    if not args.diaria or not done_today:
+                        code = asyncio.run(hunt(settings, repo, hours, False, args.skip_ai, console))
                 panel = write_panel(repo, settings.database.parent)
         console.print(Text(f"Painel local · {panel}"))
         if args.abrir:
