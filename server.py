@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from rich.console import Console
 
-from src.core.config import Settings
+from src.core.config import MAX_SEARCH_HOURS, Settings
 from src.core.hunt import hunt
 from src.core.models import JobPosting
 from src.panel import write_panel
@@ -40,7 +40,6 @@ FAVICON_SVG = (
     b'</svg>'
 )
 SERVER_STATE = {
-    "hunting": False,
     "started_at": None,
     "last_attempt_ts": 0.0,
     "last_error": None,
@@ -49,7 +48,10 @@ SERVER_STATE = {
 
 LIVE_UI_SNIPPET = """
 <style>
-  .live-controls { display: inline-flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .live-controls, .hunt-form { display: inline-flex; align-items: end; gap: .6rem; flex-wrap: wrap; }
+  .hunt-form select, .hunt-form input, .hunt-btn { min-height: 2.4rem; }
+  .hunt-form input { max-width: 6rem; }
+  .hunt-message { color: var(--muted); font-size: .85rem; }
   .hunt-btn {
     appearance: none;
     border: 1px solid var(--pine);
@@ -57,7 +59,9 @@ LIVE_UI_SNIPPET = """
     color: #fff;
     border-radius: .5rem;
     padding: .42rem .85rem;
-    font: 650 .84rem/1.2 inherit;
+    font: inherit;
+    font-size: .86rem;
+    font-weight: 650;
     cursor: pointer;
     transition: opacity .15s ease;
   }
@@ -169,19 +173,38 @@ LIVE_UI_SNIPPET = """
       bar.appendChild(wrap);
     }
 
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'hunt-btn';
-    btn.id = 'trigger-hunt-btn';
-    btn.textContent = INITIAL_HUNTING ? 'Buscando nos portais...' : '↻ Buscar vagas agora';
-    btn.disabled = INITIAL_HUNTING;
-    wrap.appendChild(btn);
+    const form = document.createElement('form');
+    form.className = 'hunt-form';
+    form.innerHTML =
+      '<label>Período da busca<select name="period">' +
+      '<option value="">Padrão do perfil (__DEFAULT_HOURS__ h)</option>' +
+      '<option value="24">Últimas 24 horas</option><option value="48">Últimas 48 horas</option>' +
+      '<option value="72">Últimos 3 dias</option><option value="168">Últimos 7 dias</option>' +
+      '<option value="336">Últimos 14 dias</option><option value="720">Últimos 30 dias</option>' +
+      '<option value="custom">Personalizado</option></select></label>' +
+      '<label hidden>Horas<input name="hours" type="number" min="1" max="__MAX_HOURS__" step="1" required disabled></label>' +
+      '<button type="submit" class="hunt-btn" id="trigger-hunt-btn">↻ Buscar vagas agora</button>';
+    wrap.appendChild(form);
+    const message = document.createElement('span');
+    message.setAttribute('role', 'status');
+    message.className = 'hunt-message';
+    wrap.appendChild(message);
+    const btn = form.querySelector('button');
+    const period = form.elements.period;
+    const hours = form.elements.hours;
+    period.addEventListener('change', () => {
+      hours.disabled = period.value !== 'custom';
+      hours.parentElement.hidden = hours.disabled;
+      if (!hours.disabled) hours.focus();
+    });
 
     let polling = false;
     function startPolling() {
       if (polling) return;
       polling = true;
       btn.disabled = true;
+      period.disabled = true;
+      hours.disabled = true;
       btn.textContent = 'Buscando nos portais...';
       const timer = setInterval(async () => {
         try {
@@ -198,20 +221,33 @@ LIVE_UI_SNIPPET = """
 
     if (INITIAL_HUNTING) startPolling();
 
-    btn.addEventListener('click', async () => {
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const value = period.value === 'custom' ? hours.valueAsNumber : Number(period.value);
+      message.textContent = '';
       btn.disabled = true;
       btn.textContent = 'Iniciando busca...';
       try {
-        const res = await fetch('/api/hunt', { method: 'POST' });
+        const res = await fetch('/api/hunt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(period.value ? { hours: value } : {})
+        });
         if (res.ok) {
           startPolling();
+        } else if (res.status === 409) {
+          message.textContent = 'Já há uma busca em andamento. Aguarde para iniciar outra.';
+          startPolling();
         } else {
+          message.textContent = (await res.json()).error;
+        }
+      } catch (_) {
+        message.textContent = 'Falha ao iniciar a busca. Verifique a conexão com o servidor.';
+      } finally {
+        if (!polling) {
           btn.disabled = false;
           btn.textContent = '↻ Buscar vagas agora';
         }
-      } catch (_) {
-        btn.disabled = false;
-        btn.textContent = '↻ Buscar vagas agora';
       }
     });
   }
@@ -367,8 +403,23 @@ def run_hunt_sync(
 ) -> bool:
     if not HUNT_LOCK.acquire(blocking=False):
         return False
+    return _run_locked_hunt(config_path, hours_override, alarm_slot, skip_ai, extend_forms=True)
 
-    SERVER_STATE["hunting"] = True
+
+def start_manual_hunt(config_path: Path, hours: int | None) -> bool:
+    if not HUNT_LOCK.acquire(blocking=False):
+        return False
+    try:
+        threading.Thread(target=_run_locked_hunt, args=(config_path, hours, None, False),
+                         kwargs={"extend_forms": hours is None}, daemon=True).start()
+    except RuntimeError:
+        HUNT_LOCK.release()
+        raise
+    return True
+
+
+def _run_locked_hunt(config_path: Path, hours_override: int | None, alarm_slot: str | None,
+                     skip_ai: bool, *, extend_forms: bool) -> bool:
     SERVER_STATE["started_at"] = datetime.now(BR).isoformat()
     SERVER_STATE["last_attempt_ts"] = time.time()
     SERVER_STATE["last_error"] = None
@@ -381,7 +432,7 @@ def run_hunt_sync(
         settings.database.parent.mkdir(parents=True, exist_ok=True)
         gate = settings.database.with_name(settings.database.name + ".lock")
         console = Console(highlight=False)
-        hours = hours_override or compute_morning_hours(datetime.now(BR))
+        hours = hours_override or settings.hours
 
         with closing(sqlite3.connect(gate, timeout=1800)) as lock:
             lock.execute("BEGIN EXCLUSIVE")
@@ -392,11 +443,13 @@ def run_hunt_sync(
                     write_panel(repo, settings.database.parent, settings)
                     return True
             log.info("Iniciando coleta de vagas (motivo=%s, janela=%dh)...", SERVER_STATE["current_reason"], hours)
-            code = asyncio.run(hunt(settings, repo, hours, False, skip_ai, console))
+            code = asyncio.run(hunt(settings, repo, hours, False, skip_ai, console, extend_forms=extend_forms))
             if code == 0 and alarm_slot:
                 repo.complete(alarm_slot, datetime.now(timezone.utc))
             write_panel(repo, settings.database.parent, settings)
-        return True
+        if code != 0:
+            SERVER_STATE["last_error"] = "Nenhuma fonte respondeu à busca."
+        return code == 0
     except Exception as exc:
         SERVER_STATE["last_error"] = str(exc)
         log.exception("Erro durante a coleta em segundo plano: %s", exc)
@@ -404,7 +457,6 @@ def run_hunt_sync(
     finally:
         if repo is not None:
             repo.db.close()
-        SERVER_STATE["hunting"] = False
         SERVER_STATE["current_reason"] = None
         HUNT_LOCK.release()
 
@@ -439,16 +491,18 @@ def read_jobs_map_and_stats(settings: Settings) -> tuple[dict, dict]:
         repo.db.close()
 
 
-def render_live_panel(config_path: Path) -> bytes:
+def render_live_panel(config_path: Path, auto_hunt: bool = True) -> bytes:
     settings = Settings.read(config_path.resolve())
     panel_path = ensure_panel_exists(settings, config_path)
     html = panel_path.read_text(encoding="utf-8")
     jobs_map, stats = read_jobs_map_and_stats(settings)
-    alarm_info = {"next_label": stats["next_alarm"]}
+    alarm_info = {"next_label": stats["next_alarm"]} if auto_hunt else None
     injected = (
         LIVE_UI_SNIPPET
         .replace("__JOBS_MAP_JSON__", json.dumps(jobs_map, ensure_ascii=False).replace("</", "<\\/"))
-        .replace("__INITIAL_HUNTING__", "true" if SERVER_STATE["hunting"] else "false")
+        .replace("__INITIAL_HUNTING__", "true" if HUNT_LOCK.locked() else "false")
+        .replace("__DEFAULT_HOURS__", str(settings.hours))
+        .replace("__MAX_HOURS__", str(MAX_SEARCH_HOURS))
         .replace("__ALARM_INFO_JSON__", json.dumps(alarm_info, ensure_ascii=False).replace("</", "<\\/"))
     )
     if "</body>" in html:
@@ -505,7 +559,7 @@ def background_scheduler(config_path: Path) -> None:
         time.sleep(60)
 
 
-def make_handler(config_path: Path):
+def make_handler(config_path: Path, auto_hunt: bool = True):
     class FindJobsHandler(BaseHTTPRequestHandler):
         def _send_bytes(self, status: int, body: bytes, content_type: str, head_only: bool = False) -> None:
             self.send_response(status)
@@ -520,6 +574,15 @@ def make_handler(config_path: Path):
         def _send_json(self, status: int, payload: dict, head_only: bool = False) -> None:
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self._send_bytes(status, raw, "application/json; charset=utf-8", head_only=head_only)
+
+        def _read_json(self) -> dict:
+            length = int(self.headers.get("Content-Length") or "0")
+            if not 0 <= length <= 4096:
+                raise ValueError("Tamanho de requisição inválido")
+            data = json.loads(self.rfile.read(length)) if length else {}
+            if not isinstance(data, dict):
+                raise ValueError("Informe um objeto JSON")
+            return data
 
         def do_HEAD(self) -> None:
             self._handle_get(head_only=True)
@@ -536,17 +599,19 @@ def make_handler(config_path: Path):
                 return
 
             if route == "/health":
-                self._send_json(HTTPStatus.OK, {"ok": True, "hunting": SERVER_STATE["hunting"]}, head_only=head_only)
+                self._send_json(HTTPStatus.OK, {"ok": True, "hunting": HUNT_LOCK.locked()}, head_only=head_only)
                 return
 
             if route == "/api/status":
                 settings = Settings.read(config_path.resolve())
                 _, stats = read_jobs_map_and_stats(settings)
+                if not auto_hunt:
+                    stats["next_alarm"] = None
                 self._send_json(
                     HTTPStatus.OK,
                     {
                         "ok": True,
-                        "hunting": SERVER_STATE["hunting"],
+                        "hunting": HUNT_LOCK.locked(),
                         "started_at": SERVER_STATE["started_at"],
                         "last_error": SERVER_STATE["last_error"],
                         "current_reason": SERVER_STATE["current_reason"],
@@ -557,7 +622,7 @@ def make_handler(config_path: Path):
                 return
 
             if route in ("/", "/index.html", "/painel.html"):
-                body = render_live_panel(config_path)
+                body = render_live_panel(config_path, auto_hunt)
                 self._send_bytes(HTTPStatus.OK, body, "text/html; charset=utf-8", head_only=head_only)
                 return
 
@@ -570,14 +635,18 @@ def make_handler(config_path: Path):
             route = parsed.path
 
             if route == "/api/hunt":
-                if not SERVER_STATE["hunting"]:
-                    now_br = datetime.now(BR)
-                    threading.Thread(
-                        target=run_hunt_sync,
-                        args=(config_path,),
-                        kwargs={"hours_override": compute_morning_hours(now_br), "alarm_slot": None},
-                        daemon=True,
-                    ).start()
+                try:
+                    payload = self._read_json()
+                    hours = payload.get("hours")
+                    if payload and (payload.keys() != {"hours"} or type(hours) is not int
+                                    or not 1 <= hours <= MAX_SEARCH_HOURS):
+                        raise ValueError("Período inválido")
+                except ValueError:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"Informe de 1 a {MAX_SEARCH_HOURS} horas inteiras."})
+                    return
+                if not start_manual_hunt(config_path, hours):
+                    self._send_json(HTTPStatus.CONFLICT, {"ok": False, "hunting": True, "error": "Já há uma busca em andamento."})
+                    return
                 self._send_json(
                     HTTPStatus.ACCEPTED,
                     {"ok": True, "hunting": True, "message": "Coleta iniciada em segundo plano."},
@@ -586,8 +655,7 @@ def make_handler(config_path: Path):
 
             if route == "/api/status":
                 try:
-                    length = int(self.headers.get("Content-Length") or "0")
-                    payload = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+                    payload = self._read_json()
                     job_id = int(payload.get("id"))
                     status = str(payload.get("status", "")).strip()
                 except (ValueError, TypeError, json.JSONDecodeError):
@@ -641,7 +709,7 @@ def main() -> int:
     if not args.no_auto_hunt:
         threading.Thread(target=background_scheduler, args=(args.config,), daemon=True).start()
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.config))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.config, auto_hunt=not args.no_auto_hunt))
     log.info("Servidor Find Jobs ativo em http://%s:%d", args.host, args.port)
     try:
         server.serve_forever()

@@ -16,13 +16,13 @@ SOURCE_NAMES = {"amazon": "Amazon Careers", "ashby": "Ashby", "greenhouse": "Gre
                 "indeed": "Indeed", "infojobs": "InfoJobs", "vagascom": "Vagas.com", "nube": "Nube"}
 
 
-def card(row) -> str:
+def card(row, *, in_last_hunt: bool = False) -> str:
     job = JobPosting.model_validate_json(row["posting"])
     decision = Decision.model_validate_json(row["decision"])
     date = datetime.fromisoformat(row["eligible_at"]).astimezone()
     score = f"{decision.score:.1f}".replace(".", ",")
     company = escape(job.company or "Empresa não informada")
-    mode, signal = workplace(job)
+    mode, signal = workplace(job.profile_details)
     location = {"remote": "Remoto", "hybrid": "Híbrido", "onsite": "Presencial", "unknown": "Local a confirmar"}[mode]
     if job.location and job.location.casefold() not in (location.casefold(), "remote"):
         location += " (" + job.location + ")"
@@ -51,6 +51,8 @@ def card(row) -> str:
         if job.form_status == "open" and job.form_checked_at:
             label += f" de {job.form_checked_at.astimezone():%d/%m/%Y}"
         form_note = f'<p class="form-note">Google Forms · {label}</p>'
+        if job.form_status == "open" and job.form_details and job.form_details.title and job.form_details.title != job.title:
+            form_note += f'<p class="meta">No formulário · {escape(job.form_details.title)}</p>'
     if job.precision == "first_seen":
         timing = " · Publicação sem data informada"
     elif job.precision == "updated" and job.updated_at:
@@ -60,7 +62,7 @@ def card(row) -> str:
     else:
         timing = ""
     status = "" if row["status"] == "nova" else f' · {escape(row["status"].capitalize())}'
-    return f"""<article class="job" data-time="{int(date.timestamp())}" data-score="{decision.score}" data-form="{int(form)}">
+    return f"""<article class="job" data-time="{int(date.timestamp())}" data-score="{decision.score}" data-form="{int(form)}" data-last-hunt="{int(in_last_hunt)}">
       <div class="job-top"><p class="company">{company}</p><span class="score" aria-label="Aderência {score} de 10">{score}<small>/10</small></span></div>
       <h2><a href="{link}" target="_blank" rel="noopener noreferrer">{escape(job.title)}</a></h2>
       <p class="meta">{escape(location)} · {escape(SOURCE_NAMES.get(job.source, job.source))}{status}</p>
@@ -81,7 +83,8 @@ def write_panel(repo: Repository, directory: Path, settings: Settings | None = N
         run = repo.last_hunt()
         rows = list(repo.visible_approved(settings.remote if settings else True))
         rows.sort(key=lambda row: not bool(JobPosting.model_validate_json(row["posting"]).active_form))
-        cards = [card(row) for row in rows]
+        last_ids = set(json.loads(run["result_ids"])) if run and run["result_ids"] is not None else None
+        cards = [card(row, in_last_hunt=last_ids is not None and row["id"] in last_ids) for row in rows]
     coverage = ""
     if run:
         date = datetime.fromisoformat(run["finished"]).astimezone()
@@ -111,7 +114,9 @@ def write_panel(repo: Repository, directory: Path, settings: Settings | None = N
         summary = "Abra “Abrir vagas” para consultar os portais e atualizar o seu histórico."
         empty = "Seu histórico de oportunidades começa com a primeira coleta."
     template = Template(Path(__file__).with_name("panel.html").read_text(encoding="utf-8"))
-    html = template.substitute(updated=updated, summary=summary, coverage=coverage, empty=empty, cards="\n".join(cards),
+    last_option = f'<option value="last" selected>Última busca ({run["hours"]} h)</option>' if last_ids is not None else ""
+    html = template.substitute(updated=updated, summary=summary, coverage=coverage, empty=empty,
+                               last_option=last_option, cards="\n".join(cards),
                                count=len(cards), no_cards="" if not cards else "hidden")
     out = NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, suffix=".tmp", delete=False)
     tmp = Path(out.name)

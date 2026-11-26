@@ -10,7 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from src.collectors.base import BR, BaseCollector, content, log, names, parse_time, safe_error, schema_jobs
-from src.core.forms import application_form
+from src.core.forms import application_form, google_form_url
 from src.core.models import JobPosting
 from src.filters.rules import contains_any
 
@@ -133,7 +133,8 @@ class Himalayas(BaseCollector):
                 if row.get("expiryDate") and row["expiryDate"] <= self.ctx.now.timestamp():
                     continue
                 regions = row.get("locationRestrictions") or []
-                yield JobPosting(source=self.name, title=row["title"], url=url, company=row.get("companyName") or "",
+                form = google_form_url(url)
+                yield JobPosting(source=self.name, title=row["title"], url=form or url, form_url=form, company=row.get("companyName") or "",
                                  location=", ".join(regions) or "Mundial", applicant_regions=regions,
                                  level=" ".join(row.get("seniority") or []), workplace="remote", is_remote=True,
                                  description=content(row.get("description")), precision="updated",

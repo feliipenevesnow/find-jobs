@@ -11,6 +11,7 @@ from pydantic import AwareDatetime, BaseModel, Field, computed_field, field_vali
 Status = Literal["nova", "salva", "candidatado", "entrevista", "descartada"]
 Precision = Literal["timestamp", "day", "native", "discovery", "first_seen", "updated", "unknown"]
 Workplace = Literal["unknown", "remote", "hybrid", "onsite"]
+FormStatus = Literal["listed", "open", "closed", "unrelated"]
 
 
 def plain(text: str) -> str:
@@ -53,14 +54,21 @@ class JobDetails(BaseModel):
     level: str = ""
 
 
+class FormDetails(BaseModel):
+    title: str
+    description: str = ""
+
+
 class JobPosting(JobDetails):
     company: str = ""
     url: str
     published_at: AwareDatetime | None = None
     updated_at: AwareDatetime | None = None
     form_url: str | None = None
-    form_status: Literal["listed", "open", "closed"] = "listed"
+    form_listed_url: str | None = None
+    form_status: FormStatus = "listed"
     form_checked_at: AwareDatetime | None = None
+    form_details: FormDetails | None = None
     precision: Precision = "unknown"
     salary: str = ""
     status: Status = "nova"
@@ -70,7 +78,7 @@ class JobPosting(JobDetails):
     def clean_url(cls, value: str) -> str:
         return canonical_url(value)
 
-    @field_validator("form_url")
+    @field_validator("form_url", "form_listed_url")
     @classmethod
     def clean_form(cls, value: str | None) -> str | None:
         if value is None:
@@ -82,7 +90,16 @@ class JobPosting(JobDetails):
 
     @property
     def active_form(self) -> str | None:
-        return self.form_url if self.form_status != "closed" else None
+        return self.form_url if self.form_status in ("listed", "open") else None
+
+    @property
+    def profile_details(self) -> JobDetails:
+        if self.form_status != "open" or not self.form_details:
+            return self
+        if self.title == self.form_details.title and self.description == self.form_details.description:
+            return self
+        return self.model_copy(update={"title": self.title + "\n" + self.form_details.title,
+                                       "description": self.description + "\n" + self.form_details.description})
 
     @computed_field
     @property

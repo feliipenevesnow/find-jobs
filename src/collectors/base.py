@@ -19,6 +19,11 @@ BR = ZoneInfo("America/Sao_Paulo")
 log = logging.getLogger("coleta")
 
 
+def meta(soup: BeautifulSoup, key: str) -> str:
+    element = soup.find("meta", property=key) or soup.find("meta", attrs={"name": key})
+    return element.get("content", "").strip() if element else ""
+
+
 def content(value: str | None) -> str:
     if not value:
         return ""
@@ -54,14 +59,19 @@ class Context:
     last_nube: datetime | None
     known_nube: set[str]
     client: httpx.AsyncClient
+    extend_forms: bool = True
 
     @property
     def cutoff(self) -> datetime:
         return self.now - timedelta(hours=self.hours)
 
     @property
+    def form_hours(self) -> int:
+        return max(self.hours, self.settings.forms_lookback_days * 24) if self.extend_forms else self.hours
+
+    @property
     def form_cutoff(self) -> datetime:
-        return min(self.cutoff, self.now - timedelta(days=self.settings.forms_lookback_days))
+        return self.now - timedelta(hours=self.form_hours)
 
 
 class BaseCollector(ABC):

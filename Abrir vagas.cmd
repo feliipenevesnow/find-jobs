@@ -6,5 +6,5 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-".venv\Scripts\python.exe" main.py --diaria --abrir
+".venv\Scripts\python.exe" main.py --diaria --escolher-periodo --abrir
 if errorlevel 1 pause

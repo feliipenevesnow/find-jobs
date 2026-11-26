@@ -3,7 +3,7 @@ CONTINUIDADE DO BUSCADOR DE VAGAS
 
 ESTADO ATUAL
 
-A retomada foi concluída em 26/11/2026 às 10h09 de Brasília. O banco e o painel foram conferidos. A última coleta teve 672 leituras em 14 fontes, três aprovações na rodada e seis vagas remotas no painel com o histórico da janela. Nenhuma das seis tinha Google Forms. Os 101 testes passaram. A parte final deste arquivo registra as falhas parciais e a situação da IA. Os passos de retomada abaixo também servem para repetir a verificação em outra sessão.
+O painel e o atalho do Windows já permitem escolher o período da busca. A avaliação por link lê o cargo e a apresentação de um Google Forms público. A revisão de 26/11/2026 passou nos 120 testes e foi conferida no Chrome. A última coleta gravada é a rodada 7, com 760 leituras e oito vagas no histórico do painel. As verificações com período personalizado foram feitas em prévia. As seções ao fim deste arquivo registram os resultados de cada revisão.
 
 PONTO DE RETOMADA NO MOMENTO DA PAUSA
 
@@ -132,3 +132,21 @@ Correções e verificações executadas após as edições:
 • Coleta pública real (.\.venv\Scripts\python.exe -X utf8 main.py --skip-ai, hunt #7 em 26/11/2026 às 10h51 de Brasília): 760 leituras em 15 fontes, 14 de 15 fontes responderam e 6 aprovações na rodada (4 do LinkedIn, 1 de comunidades no Telegram — t.me/vagasbackend/102035 — e 1 do InfoJobs). O painel (data/painel.html) passou a exibir 8 vagas remotas ativas, mantendo 0 vagas com Google Forms aprovadas após os filtros (remoto integral + nível de entrada + inscrição não-ruído).
 • Falhas parciais na coleta #7 (12 erros no total): na busca web, 3 consultas no Yahoo retornaram HTTP 500 transitório com fallback para o Bing RSS e 8 páginas de destino retornaram HTTP 400/403/404; no ProgramaThor, a listagem Júnior recebeu HTTP 429 após múltiplas requisições em sequência na mesma sessão de diagnóstico. LinkedIn (10/10 consultas), comunidades (15/15) e GitHub (10/10) concluíram com 0 erros.
 • Banco SQLite e IA: PRAGMA integrity_check retornou "ok"; consumo registrado permaneceu em 13/6 chamadas e 14638/24000 tokens (zero chamadas novas na coleta --skip-ai).
+
+REVISÃO DE PERÍODO DA BUSCA E LEITURA PROFUNDA DE GOOGLE FORMS (26/11/2026 · 17h05 BRT)
+
+O que foi implementado e verificado nesta rodada:
+
+• Escolha real do período da busca (1 a 720 horas):
+  - Painel HTTP (server.py): formulário "Período da busca" com opções prontas (padrão do perfil, 24h, 48h, 3d, 7d, 14d, 30d e "Personalizado") enviando {"hours": N} para POST /api/hunt com validação estrita (400 em valores inválidos, 409 se já houver coleta em andamento).
+  - Atalho Abrir vagas.cmd e CLI (main.py): opção --escolher-periodo e --hours propagando extend_forms=False quando o usuário escolhe explicitamente a janela, e gravando result_ids na tabela hunts.
+  - Painel (src/panel.py e src/panel.html): abre filtrando por "Última busca (X h)" após buscas com período explícito e permite alternar para "Todo o histórico salvo" em "Exibir vagas".
+• Leitura de Google Forms públicos (src/collectors/google_forms.py, src/core/models.py, src/filters/rules.py, src/core/hunt.py, src/storage/repository.py):
+  - Novo módulo src/collectors/google_forms.py lê o título, a apresentação e o estado (open/closed/listed/unrelated) de links públicos de resposta (forms.gle e docs.google.com/forms/d/.../viewform), descartando perguntas ao candidato (terminadas em "?") e formulários fora de área.
+  - Durante a coleta, anúncios dentro da janela com link de Forms têm o formulário inspecionado ANTES da reprovação por falta de cargo/nível/modalidade, permitindo que o Forms complete um anúncio curto — e também barrando vagas cuja etiqueta era "Júnior" mas o formulário declara "Pleno" ou "Sênior".
+  - Novo comando CLI: main.py --avaliar-formulario "URL" para conferir diretamente qualquer link público de Google Forms recebido fora da busca.
+  - Proteção contra falha transitória: quando uma releitura devolve status "listed", verify_form preserva form_url, form_details e estados closed/unrelated já conhecidos para não ressuscitar vaga incompatível; forms_due reavalia formulários abertos do histórico recente.
+• Verificação final após fechamento dos ajustes pendentes:
+  - Suíte completa: 120 testes passando (pytest -q -o cache_dir=build/pytest_cache --basetemp=build/pytest_tmp).
+  - Banco SQLite (data/vagas.sqlite3) migrado com coluna result_ids e política remote-forms-v2, PRAGMA integrity_check = ok, painel data/painel.html reconstruído com 8 vagas remotas ativas e --avaliar-formulario validado ao vivo em dois formulários públicos reais.
+  - Alterações desta rodada ainda pendentes de git commit na árvore local (base: commit d6e493a).

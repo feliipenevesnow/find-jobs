@@ -65,7 +65,10 @@ class Communities(BaseCollector):
                     return
                 description = content(str(body))
                 lines = [line.strip() for line in description.splitlines() if line.strip()]
+                form = application_form(description)
                 title = announcement_title(lines, self.ctx.settings.roles)
+                if not title and form and lines:
+                    title = lines[0][:200]
                 if title:
                     tags = " ".join(re.findall(r"#([\w-]+)", description))
                     yield JobPosting(
@@ -76,7 +79,7 @@ class Communities(BaseCollector):
                         url=f"https://t.me/{channel}/{match[1]}",
                         level=tags,
                         description=description,
-                        form_url=application_form(description),
+                        form_url=form,
                         published_at=stamp,
                         precision=precision,
                     )

@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+import urllib.error
 import urllib.request
 from contextlib import closing
 from datetime import datetime, timezone
@@ -101,6 +102,60 @@ def test_unique_url_constraint_and_saved_job_never_overwritten(tmp_path, job, no
                 "INSERT INTO jobs(url, posting, decision, collected_at) VALUES(?,?,?,?)",
                 (job.url, job.model_dump_json(), "{}", now.isoformat()),
             )
+
+
+def test_manual_hunt_http_validates_hours_and_reserves_selected_period(tmp_path, settings, monkeypatch):
+    settings.database = tmp_path / "vagas.db"
+    settings.hours = 38
+    monkeypatch.setattr(server.Settings, "read", lambda _: settings)
+    monkeypatch.setattr(server, "load_dotenv", lambda *args, **kwargs: None)
+    ready, finish = threading.Event(), threading.Event()
+    calls = []
+
+    async def collect(settings, repo, hours, dry, skip_ai, console, *, extend_forms):
+        calls.append((hours, extend_forms))
+        ready.set()
+        assert finish.wait(5)
+        repo.finish_hunt(hours, 0, 1, 1, 0)
+        return 0
+
+    monkeypatch.setattr(server, "hunt", collect)
+    with ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(tmp_path / "config.yaml", auto_hunt=False)) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+
+        def post(body):
+            req = urllib.request.Request(base + "/api/hunt", data=body, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    return res.status
+            except urllib.error.HTTPError as error:
+                return error.code
+
+        try:
+            with urllib.request.urlopen(base, timeout=3) as res:
+                page = res.read().decode()
+            assert "Período da busca" in page and "Padrão do perfil (38 h)" in page
+            for invalid in (b"[]", b"null", b'{"hours":', b'{"hours": true}', b'{"hours": "24"}',
+                            b'{"hours": 3.5}', b'{"hours": 0}', b'{"hours": 721}', b'{"hours": null}'):
+                assert post(invalid) == 400
+            assert not calls
+            for body, expected in ((b'{"hours": 1}', (1, False)), (b'{"hours": 720}', (720, False)), (b"", (38, True))):
+                ready.clear()
+                finish.clear()
+                assert post(body) == 202 and ready.wait(3)
+                assert post(b'{"hours": 48}') == 409 and calls[-1] == expected
+                finish.set()
+                assert server.HUNT_LOCK.acquire(timeout=3)
+                server.HUNT_LOCK.release()
+            assert len(calls) == 3
+            with urllib.request.urlopen(base + "/api/status", timeout=3) as res:
+                assert json.load(res)["next_alarm"] is None
+        finally:
+            finish.set()
+            httpd.shutdown()
+            thread.join()
 
 
 def test_morning_and_evening_alarm_windows():

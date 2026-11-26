@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 
 import httpx
@@ -101,3 +101,33 @@ def test_remote_hunt_filters_before_ai_and_keeps_jobs_when_quota_ends(monkeypatc
     assert calls == ["Desenvolvedor Mobile Júnior"]
     assert sum(d["analysis"] is not None for d in results) == 1
     assert sum(d["ai_unavailable"] for d in results) == 1
+
+
+@pytest.mark.parametrize(("hours", "extend", "approved"), [(24, False, 1), (168, False, 2), (24, True, 2)])
+def test_user_window_applies_to_form_queries_checks_and_results(hours, extend, approved, monkeypatch, settings, job, tmp_path):
+    from src.collectors.google_forms import FormInspection
+    from src.core import hunt as runner
+
+    calls = []
+    class Board(BaseCollector):
+        def queries(self):
+            return ["forms"]
+
+        async def fetch(self, query):
+            assert self.ctx.form_hours == (settings.forms_lookback_days * 24 if extend else hours)
+            for age in (1, 120):
+                yield job.model_copy(update={"title": f"Dev Jr {age}h", "url": f"https://empresa.test/{age}",
+                                             "published_at": self.ctx.now - timedelta(hours=age),
+                                             "form_url": f"https://forms.gle/F{age}"})
+
+    async def read(client, url, roles):
+        calls.append(url)
+        return FormInspection(url, "open")
+
+    settings.sources = ["gupy"]
+    monkeypatch.setattr(runner, "COLLECTORS", {"gupy": Board})
+    monkeypatch.setattr(runner, "read_form", read)
+    with closing((repo := Repository(tmp_path / "periodo.db")).db):
+        assert asyncio.run(hunt(settings, repo, hours, False, True, Console(file=StringIO()), extend_forms=extend)) == 0
+        assert len(list(repo.visible_approved())) == len(calls) == approved
+        assert repo.last_hunt()["hours"] == hours

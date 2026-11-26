@@ -66,7 +66,7 @@ summary,.open{color:var(--pine);font-weight:650;font-size:.89rem;cursor:pointer}
 $coverage
 <section aria-label="Filtrar oportunidades" class="tools">
 <label class="search">Buscar no histórico<input type="search" id="search" placeholder="Cargo, empresa ou tecnologia"></label>
-<label>Encontradas<select id="period"><option value="0">Todo o histórico salvo</option><option value="1">Últimas 24 horas</option><option value="7">Últimos 7 dias</option></select></label>
+<label>Exibir vagas<select id="period">$last_option<option value="0">Todo o histórico salvo</option><option value="1">Encontradas nas últimas 24 horas</option><option value="7">Encontradas nos últimos 7 dias</option></select></label>
 <label>Inscrição<select id="form-filter"><option value="all">Todos os canais</option><option value="form">Google Forms</option></select></label>
 <label>Ordenar por<select id="sort"><option value="priority">Google Forms primeiro</option><option value="time">Mais recentes</option><option value="score">Maior aderência</option></select></label>
 </section>
@@ -91,7 +91,8 @@ function update() {
     return Number(b.dataset[sort.value])-Number(a.dataset[sort.value]) || Number(b.dataset.time)-Number(a.dataset.time);
   });
   for (const card of cards) {
-    card.hidden = Number(card.dataset.time) < floor || !texts.get(card).includes(term) || (formFilter.value === 'form' && card.dataset.form !== '1');
+    card.hidden = (period.value === 'last' && card.dataset.lastHunt !== '1') || Number(card.dataset.time) < floor ||
+      !texts.get(card).includes(term) || (formFilter.value === 'form' && card.dataset.form !== '1');
     if (!card.hidden) count++;
     grid.append(card);
   }

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
 
 import httpx
 from rich.console import Console
@@ -13,18 +12,18 @@ from src.collectors.base import Context
 from src.collectors.careers import Amazon, Ashby, Greenhouse, Himalayas, ProgramaThor, WeWorkRemotely
 from src.collectors.community import Communities
 from src.collectors.github import Github
+from src.collectors.google_forms import read_form
 from src.collectors.gupy import Gupy
 from src.collectors.hackernews import HackerNews
 from src.collectors.jobspy import JobSpy
 from src.collectors.portals import HtmlBoard, Nube
-from src.collectors.public_page import public_page
-from src.collectors.web import WebSearch, form_state
+from src.collectors.web import WebSearch
 from src.core.config import Settings
 from src.core.forms import application_form, google_form_url
 from src.core.models import Decision, JobPosting, plain
 from src.filters.ai import PRIORITY, assess
 from src.filters.profile import read_profile
-from src.filters.rules import TIME_FILTERS, application_rejection, evaluate
+from src.filters.rules import TIME_FILTERS, evaluate, evaluate_application, publication_rejection
 from src.storage.repository import Repository
 
 COLLECTORS = {"gupy": Gupy, "github": Github, "linkedin": JobSpy, "indeed": JobSpy,
@@ -47,38 +46,35 @@ def print_ai_usage(console: Console, repo: Repository, settings: Settings):
                   f"e {tokens}/{settings.ai_budget.tokens_per_24h} tokens contabilizados.")
 
 
-async def check_form(client, url):
-    try:
-        final, soup = await public_page(client, url)
-        destination = urlsplit(final)
-        if destination.hostname == "docs.google.com" and destination.path.endswith("/closedform"):
-            return url, "closed"
-        if google_form_url(final) and destination.hostname == "docs.google.com":
-            return google_form_url(final) or url, form_state(soup)
-    except httpx.HTTPStatusError as error:
-        if error.response.status_code in (404, 410):
-            return url, "closed"
-    except (ValueError, OSError, httpx.HTTPError):
-        pass
-    # Bloqueio temporário ou login: o anúncio continua sendo a evidência do link.
-    return url, "listed"
-
-
-async def verify_form(job, client, checks):
-    if job.form_url not in checks:
-        checks[job.form_url] = asyncio.create_task(check_form(client, job.form_url))
-    job.form_url, job.form_status = await checks[job.form_url]
+async def verify_form(job, ctx, checks, repo):
+    link = job.form_url
+    if link not in checks:
+        checks[link] = asyncio.create_task(read_form(ctx.client, link, ctx.settings.roles))
+    form = await checks[link]
+    checks.setdefault(form.url, checks[link])
+    job.form_listed_url = job.form_listed_url or link
+    job.form_url, job.form_status, job.form_details = form.url, form.status, form.details
     job.form_checked_at = datetime.now(timezone.utc)
+    if form.status == "listed":
+        for row in repo.lookup(job):
+            previous = JobPosting.model_validate_json(row["posting"])
+            if previous.form_url and link in (previous.form_url, previous.form_listed_url or application_form(previous.description)):
+                job.form_url, job.form_details = previous.form_url, previous.form_details
+                if previous.form_status in ("closed", "unrelated"):
+                    job.form_status = previous.form_status
+                break
+    if job.source == "web" and google_form_url(job.url) and form.status == "open":
+        if form.job_opening:
+            job.title, job.description = form.details.title, form.details.description
+        else:
+            job.form_status = "unrelated"
 
 
-async def refresh_saved_forms(ctx, repo, checks):
+async def refresh_saved_forms(ctx, repo, checks, records=None):
     for row in repo.forms_due(ctx.form_cutoff, ctx.now - timedelta(hours=12), ctx.settings.results_per_search):
         job = JobPosting.model_validate_json(row["posting"])
-        await verify_form(job, ctx.client, checks)
-        decision = Decision.model_validate_json(row["decision"])
-        if job.form_status == "closed" and (reason := application_rejection(job)):
-            decision = decision.model_copy(update={"eligible": False, "reason": reason})
-        repo.record(job, decision, ctx.now)
+        await verify_form(job, ctx, checks, repo)
+        repo.record(job, evaluate_application(job, ctx.settings, records), ctx.now)
 
 
 async def review_finalists(client, candidates, provider, resume, repo, settings, dry):
@@ -88,7 +84,7 @@ async def review_finalists(client, candidates, provider, resume, repo, settings,
         options = dict(repo=repo, limits=settings.ai_budget)
         result = await assess(client, provider, resume, job, local, preview=True, **options)
         if not result.analysis and not dry:
-            detail = plain(job.description)
+            detail = plain(job.profile_details.description)
             if remaining == 0 or len(detail.split()) < 8 or not (local.skills or local.evidence or PRIORITY.search(detail)):
                 continue
             remaining -= 1
@@ -97,7 +93,7 @@ async def review_finalists(client, candidates, provider, resume, repo, settings,
 
 
 async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip_ai: bool,
-               console: Console) -> int:
+               console: Console, *, extend_forms: bool = True) -> int:
     now = datetime.now(timezone.utc)
     provider = "none" if skip_ai else (os.getenv("AI_PROVIDER") or "none").strip().lower()
     if provider not in {"none", "gemini", "groq", "openai", "ollama"}:
@@ -113,7 +109,7 @@ async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip
     user_agent = "Mozilla/5.0 (compatible; FindJobsBR/0.1; public job listings)"
     async with httpx.AsyncClient(timeout=httpx.Timeout(18, connect=8), follow_redirects=True,
                                  headers={"User-Agent": user_agent}) as public, httpx.AsyncClient(timeout=35) as private:
-        ctx = Context(settings, now, hours, repo.checkpoint("nube"), repo.seen_urls("nube"), public)
+        ctx = Context(settings, now, hours, repo.checkpoint("nube"), repo.seen_urls("nube"), public, extend_forms)
         sources = [COLLECTORS[name](name, ctx) for name in dict.fromkeys(settings.sources)]
         form_checks = {}
         candidate_ids = set()
@@ -127,19 +123,18 @@ async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip
                 observed = datetime.now(timezone.utc)
                 if not job.form_url and job.source != "himalayas":
                     job.form_url = application_form(job.description)
+                if job.form_url and job.precision == "unknown" and not job.published_at:
+                    job.precision = "first_seen"
                 first_seen = observed
                 if job.precision == "first_seen" and (matches := repo.lookup(job)):
                     first_seen = min(datetime.fromisoformat(row["collected_at"]) for row in matches)
                 if job.form_url and job.form_status == "listed":
-                    prospect = job.model_copy(update={"form_status": "open"})
-                    fit = evaluate(prospect, settings, ctx.cutoff, observed, ctx.last_nube, records, first_seen=first_seen)
-                    if fit.eligible and fit.score >= settings.min_score:
-                        await verify_form(job, public, form_checks)
+                    if not publication_rejection(job, ctx.cutoff, observed, ctx.last_nube, first_seen, ctx.form_cutoff):
+                        await verify_form(job, ctx, form_checks, repo)
                 elif job.form_status == "open":
                     job.form_checked_at = observed
-                decision = evaluate(job, settings, ctx.cutoff, observed, ctx.last_nube, records, first_seen=first_seen)
-                if decision.eligible and decision.score < settings.min_score:
-                    decision = decision.model_copy(update={"eligible": False, "reason": "Nota abaixo do mínimo"})
+                decision = evaluate(job, settings, ctx.cutoff, observed, ctx.last_nube, records,
+                                    first_seen=first_seen, form_cutoff=ctx.form_cutoff)
                 job_id = repo.record(job, decision, observed, keep_approved=decision.reason in TIME_FILTERS)
                 if decision.eligible:
                     candidate_ids.add(job_id)
@@ -152,7 +147,7 @@ async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip
                     "queries_ok": collector.successes, "errors": collector.errors}
 
         stats = await asyncio.gather(*(ingest(c) for c in sources))
-        await refresh_saved_forms(ctx, repo, form_checks)
+        await refresh_saved_forms(ctx, repo, form_checks, records)
         if provider != "none" and resume:
             candidates = []
             for job_id in candidate_ids:
@@ -165,10 +160,11 @@ async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip
             summary.add_row(stat["source"], *(str(stat[key]) for key in ("read", "approved", "forms", "errors")))
         console.print(summary)
         successful = sum(bool(source.successes) for source in sources)
+        result_ids = None if extend_forms else candidate_ids
         if not dry:
             repo.finish_hunt(hours, sum(s["read"] for s in stats), successful, len(sources),
-                             sum(source.errors for source in sources), stats)
-        rows = repo.pending(ctx.cutoff)
+                             sum(source.errors for source in sources), stats, result_ids=result_ids)
+        rows = repo.pending(ctx.cutoff, result_ids=result_ids)
         total = 0
         for row in rows:
             job = JobPosting.model_validate_json(row["posting"])
@@ -176,7 +172,7 @@ async def hunt(settings: Settings, repo: Repository, hours: int, dry: bool, skip
             if not decision.eligible or decision.score < settings.min_score:
                 continue
             current = evaluate(job, settings, ctx.cutoff, datetime.now(timezone.utc), now if job.precision == "discovery" else None,
-                               records, first_seen=datetime.fromisoformat(row["collected_at"]))
+                               records, first_seen=datetime.fromisoformat(row["collected_at"]), form_cutoff=ctx.form_cutoff)
             if not current.eligible:
                 continue
             total += 1

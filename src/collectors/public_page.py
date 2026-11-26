@@ -19,7 +19,10 @@ async def public_address(host: str) -> str:
 async def public_page(client: httpx.AsyncClient, url: str) -> tuple[str, BeautifulSoup]:
     async with asyncio.timeout(18):
         for _ in range(5):
-            target = httpx.URL(url)
+            try:
+                target = httpx.URL(url)
+            except httpx.InvalidURL as error:
+                raise ValueError("Endereço de página inválido") from error
             if (target.scheme != "https" or not target.host or target.userinfo or target.port not in (None, 443)
                     or "\\" in url or "%" in target.host):
                 raise ValueError("Endereço de página inválido")

@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timedelta
 
 from src.core.config import Settings
+from src.core.forms import google_form_url
 from src.core.models import Decision, Evidence, JobDetails, JobPosting, normalized, plain
 from src.filters.profile import extra_credit, has_term, relevant_evidence
 from src.filters.workplace import available_from_brazil, workplace
@@ -35,6 +36,8 @@ ENTRY_DESCRIPTION = re.compile(
     r"recent graduates (?:are )?(?:welcome|encouraged)|entry.level (?:role|position)|"
     r"(?:vaga|nivel|senioridade|posicao)\s*[:=-]?\s*(?:junior|jr|trainee))\b"
 )
+LEVEL_FIELD = re.compile(r"(?:^|[\n.;|])\s*(?:nivel(?: da vaga| de experiencia)?|senioridade(?: da vaga)?|seniority(?: level)?)"
+                        r"\s*[:=–-]\s*([^\n.;|!?]{1,60})", re.M)
 
 
 def location_rejection(job: JobDetails, settings: Settings) -> str | None:
@@ -59,8 +62,11 @@ def location_rejection(job: JobDetails, settings: Settings) -> str | None:
 
 def application_rejection(job: JobPosting) -> str | None:
     direct_boards = {"gupy", "amazon", "greenhouse", "ashby", "linkedin", "indeed", "vagascom", "infojobs"}
-    if job.form_status == "closed" and job.source not in direct_boards:
-        return "O formulário encerrou as inscrições"
+    if job.source not in direct_boards or google_form_url(job.url):
+        if job.form_status == "closed":
+            return "O formulário encerrou as inscrições"
+        if job.form_status == "unrelated":
+            return "O formulário não é uma candidatura para esta vaga"
     if job.precision == "first_seen" and job.form_status != "open":
         return "Formulário sem confirmação de inscrições abertas"
     return None
@@ -88,33 +94,57 @@ def requires_experience(description: str) -> bool:
     return False
 
 
-def evaluate(job: JobPosting, settings: Settings, cutoff: datetime, now: datetime,
-             previous_nube: datetime | None = None, records: list[Evidence] | None = None,
-             *, first_seen: datetime | None = None) -> Decision:
-    def reject(reason: str) -> Decision:
-        return Decision(eligible=False, reason=reason)
-
-    if job.form_url and job.form_status == "open" and job.precision in ("timestamp", "day"):
-        cutoff = min(cutoff, now - timedelta(days=settings.forms_lookback_days))
+def publication_rejection(job: JobPosting, cutoff: datetime, now: datetime, previous_nube: datetime | None,
+                          first_seen: datetime | None, form_cutoff: datetime | None) -> str | None:
+    if form_cutoff is not None and job.precision in ("timestamp", "day"):
+        cutoff = form_cutoff
     if job.precision in ("first_seen", "updated"):
         when = first_seen if job.precision == "first_seen" else job.updated_at
         if not when or not cutoff <= when <= now:
-            return reject(OUTSIDE_WINDOW)
+            return OUTSIDE_WINDOW
     elif job.precision == "discovery":
         if previous_nube is None or previous_nube < cutoff:
-            return reject(DISCOVERY_WINDOW)
+            return DISCOVERY_WINDOW
     elif job.precision == "native":
+        if job.published_at and job.published_at > now:
+            return OUTSIDE_WINDOW
         if job.published_at and job.published_at + timedelta(days=1) <= cutoff:
-            return reject(OLD_DAY)
+            return OLD_DAY
     else:
         if not job.published_at or job.published_at < cutoff or job.published_at > now:
-            return reject(OUTSIDE_WINDOW)
+            return OUTSIDE_WINDOW
+    return None
+
+
+def evaluate(job: JobPosting, settings: Settings, cutoff: datetime, now: datetime,
+             previous_nube: datetime | None = None, records: list[Evidence] | None = None,
+             *, first_seen: datetime | None = None, form_cutoff: datetime | None = None) -> Decision:
+    if not job.form_url or job.form_status != "open":
+        form_cutoff = None
+    elif form_cutoff is None:
+        form_cutoff = min(cutoff, now - timedelta(days=settings.forms_lookback_days))
+    if reason := publication_rejection(job, cutoff, now, previous_nube, first_seen, form_cutoff):
+        return Decision(eligible=False, reason=reason)
+    return evaluate_application(job, settings, records)
+
+
+def evaluate_application(job: JobPosting, settings: Settings, records: list[Evidence] | None = None) -> Decision:
     if reason := application_rejection(job):
-        return reject(reason)
-    return evaluate_fit(job, settings, records)
+        return Decision(eligible=False, reason=reason)
+    fit = evaluate_fit(job, settings, records)
+    # Uma falha de leitura não desfaz uma incompatibilidade já confirmada no mesmo formulário.
+    if fit.eligible and job.form_status == "listed" and job.form_details:
+        last_verified = evaluate_fit(job.model_copy(update={"form_status": "open"}), settings, records)
+        if not last_verified.eligible:
+            return last_verified
+    if fit.eligible and fit.score < settings.min_score:
+        return fit.model_copy(update={"eligible": False, "reason": "Nota abaixo do mínimo"})
+    return fit
 
 
 def evaluate_fit(job: JobDetails, settings: Settings, records: list[Evidence] | None = None) -> Decision:
+    if isinstance(job, JobPosting):
+        job = job.profile_details
     text = job.title + " " + job.description
     evidence = relevant_evidence(text, records or [])
 
@@ -122,7 +152,8 @@ def evaluate_fit(job: JobDetails, settings: Settings, records: list[Evidence] | 
         return Decision(eligible=False, reason=reason, evidence=evidence)
 
     title = re.sub(r"\bpl/sql\b", "", plain(job.title))
-    if contains_any(title + " " + job.level, settings.blocked) or re.search(
+    level = " ".join([title, job.level, *LEVEL_FIELD.findall(plain(job.description))])
+    if contains_any(level, settings.blocked) or re.search(
         r"\b(?:engineer|developer|desenvolvedor[a]?|engenheir[oa])\s+(?:ii|iii|iv|[2-4])\b", title
     ):
         if contains_any(title, ["jr", "júnior"]) and any(
@@ -130,7 +161,7 @@ def evaluate_fit(job: JobDetails, settings: Settings, records: list[Evidence] | 
         ):
             return reject("Título misto júnior/pleno. O perfil bloqueia pleno.")
         return reject("Senioridade acima do perfil")
-    if not contains_any(job.title + " " + job.level, settings.positive) and not ENTRY_DESCRIPTION.search(plain(job.description)):
+    if not contains_any(level, settings.positive) and not ENTRY_DESCRIPTION.search(plain(job.description)):
         return reject("Nível de entrada não identificado")
     if not contains_any(job.title, settings.roles):
         return reject("Cargo fora do perfil")

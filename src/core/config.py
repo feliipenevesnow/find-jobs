@@ -9,6 +9,7 @@ Source = Literal["gupy", "github", "linkedin", "indeed", "infojobs", "vagascom",
 Repo = Annotated[str, StringConstraints(pattern=r"^[\w.-]+/[\w.-]+$")]
 Term = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Slug = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_-]+$")]
+MAX_SEARCH_HOURS = 720
 
 
 class AiBudget(BaseModel):
@@ -27,7 +28,7 @@ class Settings(BaseModel):
     positive: list[Term] = Field(min_length=1)
     blocked: list[Term]
     excluded_areas: list[Term] = Field(default_factory=list)
-    hours: int = Field(ge=1, le=720)
+    hours: int = Field(ge=1, le=MAX_SEARCH_HOURS)
     min_score: float = Field(ge=0, le=10)
     ai_budget: AiBudget = Field(default_factory=AiBudget)
     remote: bool

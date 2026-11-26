@@ -36,7 +36,8 @@ def google_form_url(value: str, *, _unwrap: bool = True) -> str | None:
 
 LINK = re.compile(r"https?://[^\s<>\"'()\[\]]+", re.I)
 APPLY = re.compile(r"candidat|inscric|inscrev|appli(?:cation|que)|\bapply\b|processo seletivo|como participar|preench|envie (?:seu|sua|as)|(?:atraves|por meio|pelo|neste|no link) (?:des[st]e |do )?formulario|interessad[oa]s?|cadastre|cadastro|concorrer|seletiva|trabalhe conosco|link de inscricao|formulario da vaga")
-UNRELATED = re.compile(r"newsletter|pesquisa de satisfacao|feedback|evento|webinar|sorteio|survey|banco de talentos|lista de espera|questionario|encuesta|mentoria|briefing")
+UNRELATED = re.compile(r"newsletter|pesquisa de satisfacao|feedback|evento|webinar|sorteio|survey|banco de talentos|lista de espera|"
+                       r"questionario(?! (?:de |do |para )?(?:candidatura|processo seletivo|recrutamento))|encuesta|mentoria|briefing")
 
 
 def application_form(text: str) -> str | None:

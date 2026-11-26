@@ -1,30 +1,21 @@
 import os
 import re
 from collections.abc import AsyncIterator
-from datetime import datetime
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 import httpx
 from bs4 import BeautifulSoup
 
-from src.collectors.base import BR, BaseCollector, content, log, names, parse_time, safe_error, schema_jobs
+from src.collectors.base import BaseCollector, content, log, meta, names, parse_time, safe_error, schema_jobs
 from src.collectors.careers import expired
-from src.collectors.community import announcement_title
+from src.collectors.google_forms import NON_JOB, inspect_page
 from src.collectors.public_page import public_page
 from src.core.forms import application_form, google_form_url
 from src.core.models import JobPosting, canonical_url, plain
 from src.filters.rules import contains_any
 
 
-def meta(soup, key: str) -> str:
-    element = soup.find("meta", property=key) or soup.find("meta", attrs={"name": key})
-    return element.get("content", "").strip() if element else ""
-
-
-HIRING = re.compile(r"\b(vagas?|candidat\w*|contrata\w*|oportunidade|inscri\w*|processo seletivo|hiring|application|apply|job opening)\b")
-NON_JOB = re.compile(r"\b(pesquisa|survey|workshop|curso de|evento|palestra|newsletter|banco de talentos|talent pool|questionario|encuesta|mentoria|briefing)\b")
-CLOSED = re.compile(r"nao (?:esta |esta mais |esta mais a |aceita mais |esta aceitando mais |e mais )?(?:aceitando |a aceitar |recebendo |aceit[ao]s? )?(?:mais )?respostas|no longer (?:accepting|taking) responses|inscricoes encerradas")
 SKIP_HOSTS = {
     "wikipedia.org", "pt.wikipedia.org", "en.wikipedia.org", "en.m.wikipedia.org",
     "youtube.com", "www.youtube.com", "music.youtube.com",
@@ -35,60 +26,9 @@ SKIP_HOSTS = {
 }
 
 
-def form_state(soup: BeautifulSoup) -> str:
-    text = plain(soup.get_text(" ", strip=True))
-    if CLOSED.search(text):
-        return "closed"
-    deadline = re.search(r"\b(?:inscricoes|candidaturas|prazo)(?: abertas?)?\s*(?:ate|:)\s*(\d{2}/\d{2}/\d{4})\b", text)
-    if deadline:
-        try:
-            if datetime.strptime(deadline[1], "%d/%m/%Y").date() < datetime.now(BR).date():
-                return "closed"
-        except ValueError:
-            pass
-    if soup.select_one('form[action*="/formResponse"]'):
-        return "open"
-    return "listed"
-
-
-def form_posting(url: str, soup: BeautifulSoup, roles: list[str]) -> JobPosting | None:
-    form = google_form_url(url)
-    if not form or form_state(soup) != "open":
-        return None
-    heading = soup.select_one('[role="heading"][aria-level="1"], h1, .freebirdFormviewerViewHeaderTitle')
-    title = meta(soup, "og:title") or (heading.get_text(" ", strip=True) if heading else "")
-    title = re.sub(r"\s*[-–]\s*Google (?:Forms|Formulários)$", "", title, flags=re.I)
-    intro = soup.select_one(".freebirdFormviewerViewHeaderDescription, .cBGGJ")
-    intro_dom = intro.get_text("\n", strip=True) if intro else ""
-    intro_meta = meta(soup, "og:description")
-    description = intro_meta if len(intro_meta) > len(intro_dom) else intro_dom
-    # Perguntas sobre preferência por trabalho remoto não descrevem a modalidade da vaga.
-    header = title + "\n" + description
-    recruitment_field = re.search(r"\b(?:curriculo|pretensao salarial|cover letter|resume)\b", plain(soup.get_text(" ", strip=True)))
-    if not (HIRING.search(plain(header)) or recruitment_field) or NON_JOB.search(plain(title)):
-        return None
-    role = title if contains_any(title, roles) else announcement_title(description.splitlines(), roles)
-    if not role:
-        for clause in re.split(r"[.!?\n]+", description):
-            candidate = clause.strip(" \t#*-:📌🚀💻📜🎯")
-            if not candidate or len(candidate) > 180 or not contains_any(candidate, roles):
-                continue
-            if re.match(r"(?i)^(?:requisitos?|experiência|conhecimento|responsabilidades?|benefícios?|diferenciais|sobre)\b", candidate):
-                continue
-            if 1 <= len(title) <= 60 and len(f"{title} — {candidate}") <= 180:
-                role = f"{title} — {candidate}"
-            else:
-                role = candidate
-            break
-    if not role:
-        return None
-    return JobPosting(source="web", title=role, description=header, url=form, form_url=form,
-                      form_status="open", precision="first_seen")
-
-
 def web_posting(url, soup, ctx) -> JobPosting | None:
-    if google_form_url(url):
-        return form_posting(url, soup, ctx.settings.roles)
+    if form := google_form_url(url):
+        return inspect_page(form, soup, ctx.settings.roles).posting()
     jobs = list(schema_jobs(soup))
     container = soup.select_one("article") or soup.select_one("main") or soup.body
     if len(jobs) == 1:
@@ -118,7 +58,7 @@ def web_posting(url, soup, ctx) -> JobPosting | None:
     if len(headings) != 1:
         return None
     title = headings[0].get_text(" ", strip=True)
-    if not contains_any(title, ctx.settings.roles) or NON_JOB.search(plain(title)):
+    if NON_JOB.search(plain(title)):
         return None
     for unrelated in container.select("nav, footer, aside, script, style, form"):
         unrelated.decompose()
@@ -127,6 +67,8 @@ def web_posting(url, soup, ctx) -> JobPosting | None:
     date = container.select_one("time[datetime][itemprop=datePublished], time.published[datetime]")
     stamp, precision = parse_time(meta(soup, "article:published_time") or (date["datetime"] if date else None))
     if not form:
+        if not contains_any(title, ctx.settings.roles):
+            return None
         apply_label = re.compile(r"\b(?:candidate-se|candidatar|inscreva-se|apply now|apply for (?:this|the) (?:job|position))\b")
         if not stamp or not any(apply_label.search(plain(a.get_text(" ", strip=True))) for a in container.select("a[href]")):
             return None
@@ -197,7 +139,7 @@ class WebSearch(BaseCollector):
         inspected = 0
         for target, snippet in await self.results(query):
             try:
-                url = canonical_url(target)
+                url = google_form_url(target) or canonical_url(target)
             except ValueError:
                 continue
             if url in self.seen or not url.startswith("https://"):

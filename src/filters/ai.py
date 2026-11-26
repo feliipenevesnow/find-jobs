@@ -68,6 +68,7 @@ def excerpt(value: str, limit: int, keywords: list[str]) -> str:
 
 
 def compact_input(resume: str, job: JobPosting, result: Decision, *, include_sources: bool = False) -> dict:
+    details = job.profile_details
     skills = [str(s)[:70] for s in result.skills[:20]]
     terms = [plain(s) for s in skills]
     proof = [{"kind": e.kind, "fact": profile_text(e.fact)[:240], "terms": [t[:60] for t in e.terms[:6]]}
@@ -76,8 +77,8 @@ def compact_input(resume: str, job: JobPosting, result: Decision, *, include_sou
         for item, evidence in zip(proof, result.evidence):
             item["source"] = evidence.source[:100]
     return {"curriculo": excerpt(profile_text(resume), 1050, terms), "evidencias_selecionadas": proof,
-            "titulo": job.title[:220], "nivel": job.level[:80], "local": job.location[:120], "remoto": workplace(job)[0] == "remote",
-            "competencias_em_comum": skills, "descricao": excerpt(CONTACT.sub("", job.description), 2600, terms)}
+            "titulo": details.title[:220], "nivel": job.level[:80], "local": job.location[:120], "remoto": workplace(details)[0] == "remote",
+            "competencias_em_comum": skills, "descricao": excerpt(CONTACT.sub("", details.description), 2600, terms)}
 
 
 def request_for(provider: str, model: str, context: dict, result: Decision):

@@ -6,6 +6,7 @@ import httpx
 import pytest
 from bs4 import BeautifulSoup
 
+from src.collectors.google_forms import FormInspection, inspect_page
 from src.core.forms import application_form, google_form_url
 from src.core.hunt import review_finalists
 from src.core.models import Analysis, Decision
@@ -50,6 +51,7 @@ def test_form_links_belong_to_application():
     assert application_form("Como se candidatar\n[Inscreva-se aqui](" + short + ")") == short
     assert application_form("Vaga de dev jr\nRequisitos: Python\n🔗 " + long) == long
     assert not application_form("Pesquisa de satisfação\nPreencha aqui: " + short)
+    assert application_form("Questionário de candidatura: " + short) == short
     for unsafe in (short.replace("forms.gle", "forms.gle.example"), long.replace("viewform", "edit"),
                    long.replace("/viewform", "/edit"), short.replace("forms.gle", "user@forms.gle"),
                    short.replace("https:", "http:")):
@@ -137,10 +139,10 @@ def test_refresh_closed_form_preserves_an_independent_career_page(tmp_path, sett
     from src.collectors.base import Context
     from src.core import hunt as runner
     calls = []
-    async def closed(client, url):
+    async def closed(client, url, roles):
         calls.append(url)
-        return url, "closed"
-    monkeypatch.setattr(runner, "check_form", closed)
+        return FormInspection(url, "closed")
+    monkeypatch.setattr(runner, "read_form", closed)
     form = "https://forms.gle/closed"
     ctx = Context(settings, now, 36, None, set(), None)
     with closing((repo := Repository(tmp_path / "db")).db):
@@ -153,3 +155,145 @@ def test_refresh_closed_form_preserves_an_independent_career_page(tmp_path, sett
         rows = list(repo.visible_approved())
         assert len(rows) == 1 and rows[0]["url"] == portal.url
         assert "Abrir Google Forms" not in write_panel(repo, tmp_path).read_text(encoding="utf-8")
+
+
+def test_linked_form_completes_ad_and_recheck_with_pleno_removes_it(tmp_path, settings, job, monkeypatch):
+    from datetime import datetime, timezone
+    from io import StringIO
+    from rich.console import Console
+    from src.collectors.base import BaseCollector, Context
+    from src.collectors import google_forms
+    from src.core import hunt as runner
+
+    short = "https://forms.gle/abc"
+    public = "https://docs.google.com/forms/d/e/abc/viewform"
+    now = datetime.now(timezone.utc)
+    title = "Desenvolvedor Júnior"
+    calls = []
+
+    class Board(BaseCollector):
+        def queries(self):
+            return ["dev"]
+
+        async def fetch(self, query):
+            for _ in range(2):
+                yield job.model_copy(update={"title": "Processo seletivo", "source": "github", "location": "",
+                                             "is_remote": False, "description": f"Inscreva-se: {short}", "published_at": now})
+
+    async def page(_, url):
+        calls.append(url)
+        html = (f'<h1>{title}</h1><div class="cBGGJ">Estamos em busca de uma pessoa para nosso time. '
+                'Trabalho 100% remoto com Python.</div><form action="/forms/d/e/abc/formResponse">'
+                'Você trabalhou com alguém sênior? Seu e-mail</form>')
+        return public, BeautifulSoup(html, "html.parser")
+
+    monkeypatch.setattr(google_forms, "public_page", page)
+    monkeypatch.setattr(runner, "COLLECTORS", {"github": Board})
+    settings.sources = ["github"]
+    with closing((repo := Repository(tmp_path / "vagas.db")).db):
+        assert asyncio.run(runner.hunt(settings, repo, 24, False, True, Console(file=StringIO()), extend_forms=False)) == 0
+        row, = repo.visible_approved()
+        assert calls == [short] and "Seu e-mail" not in row["posting"]
+        assert "No formulário · Desenvolvedor Júnior" in write_panel(repo, tmp_path).read_text(encoding="utf-8")
+        repo.set_status(row["id"], "salva")
+        title = "Desenvolvedor Pleno"
+        ctx = Context(settings, now + timedelta(days=1), 36, None, set(), None)
+        asyncio.run(runner.refresh_saved_forms(ctx, repo, {}))
+        assert calls == [short, public] and not list(repo.visible_approved())
+        saved, = repo.approved()
+        assert saved["status"] == "salva" and "Senioridade acima do perfil" in saved["decision"]
+
+
+def test_transient_form_read_failure_preserves_prior_rejection_and_open_recheck_recovers(tmp_path, settings, job, monkeypatch):
+    from datetime import datetime, timezone
+    from io import StringIO
+    from rich.console import Console
+    from src.collectors.base import BaseCollector, Context
+    from src.core import hunt as runner
+    from src.core.models import FormDetails
+
+    short = "https://forms.gle/retry1"
+    public = "https://docs.google.com/forms/d/e/retry1/viewform"
+    now = datetime.now(timezone.utc)
+    state = {"response": FormInspection(public, "open", FormDetails(title="Desenvolvedor Pleno", description="100% remoto."), job_opening=True)}
+
+    class Board(BaseCollector):
+        def queries(self):
+            return ["dev"]
+
+        async def fetch(self, query):
+            yield job.model_copy(update={"title": "Desenvolvedor Júnior", "source": "github", "location": "",
+                                         "is_remote": True, "description": f"100% remoto. Inscreva-se: {short}", "published_at": now})
+
+    async def fake_read(client, url, roles):
+        return state["response"]
+
+    monkeypatch.setattr(runner, "COLLECTORS", {"github": Board})
+    monkeypatch.setattr(runner, "read_form", fake_read)
+    settings.sources = ["github"]
+    with closing((repo := Repository(tmp_path / "retry.db")).db):
+        # 1) Aprovada inicialmente quando o formulário estava aberto como júnior.
+        state["response"] = FormInspection(public, "open", FormDetails(title="Desenvolvedor Júnior", description="100% remoto."), job_opening=True)
+        assert asyncio.run(runner.hunt(settings, repo, 24, False, True, Console(file=StringIO()), extend_forms=False)) == 0
+        assert len(list(repo.visible_approved())) == 1
+        # 2) Formulário muda para Pleno: sai das vagas visíveis.
+        state["response"] = FormInspection(public, "open", FormDetails(title="Desenvolvedor Pleno", description="100% remoto."), job_opening=True)
+        assert asyncio.run(runner.hunt(settings, repo, 24, False, True, Console(file=StringIO()), extend_forms=False)) == 0
+        assert not list(repo.visible_approved())
+        # 3) Falha temporária de leitura (status="listed") não pode ressuscitar a vaga Pleno.
+        state["response"] = FormInspection(short, "listed")
+        assert asyncio.run(runner.hunt(settings, repo, 24, False, True, Console(file=StringIO()), extend_forms=False)) == 0
+        assert not list(repo.visible_approved())
+        # 4) Se o formulário aberto voltar a ser Júnior, forms_due reavalia e restaura a aprovação.
+        state["response"] = FormInspection(public, "open", FormDetails(title="Desenvolvedor Júnior", description="100% remoto."), job_opening=True)
+        ctx = Context(settings, now + timedelta(days=1), 36, None, set(), None)
+        asyncio.run(runner.refresh_saved_forms(ctx, repo, {}))
+        assert len(list(repo.visible_approved())) == 1
+        # 5) Se o formulário encerrar e depois falhar temporariamente, mantém status closed.
+        state["response"] = FormInspection(public, "closed")
+        ctx2 = Context(settings, now + timedelta(days=2), 36, None, set(), None)
+        asyncio.run(runner.refresh_saved_forms(ctx2, repo, {}))
+        assert not list(repo.visible_approved())
+        state["response"] = FormInspection(short, "listed")
+        assert asyncio.run(runner.hunt(settings, repo, 24, False, True, Console(file=StringIO()), extend_forms=False)) == 0
+        assert not list(repo.visible_approved())
+
+
+@pytest.mark.parametrize(("title", "intro", "body", "eligible"), [
+    ("Vaga Dev", "Senioridade: Júnior. Trabalho remoto com mentoria do time sênior.", "", True),
+    ("Vaga Dev Júnior", "Senioridade: Pleno. Trabalho 100% remoto.", "", False),
+    ("Vaga Dev", "Trabalho 100% remoto.", "Qual seu nível? Júnior, pleno ou sênior", False),
+    ("Vaga Dev Júnior", "Você prefere trabalho 100% remoto?", "", False),
+    ("Banco de talentos Dev Júnior", "Trabalho remoto.", "Currículo", False),
+    ("Questionário de candidatura para Dev Jr", "Trabalho 100% remoto.", "Nome", True),
+    ("Candidatura Dev Jr", "Cargo: Analista de Marketing\nTrabalho 100% remoto.", "", False),
+])
+def test_form_uses_employer_statements(title, intro, body, eligible, settings):
+    html = BeautifulSoup(f'<h1>{title}</h1><div class="cBGGJ">{intro}</div>'
+                         f'<form action="/formResponse">{body}</form>', "html.parser")
+    form = inspect_page("https://docs.google.com/forms/d/e/abc/viewform", html, settings.roles)
+    posting = form.posting()
+    assert bool(posting and evaluate_fit(posting, settings).eligible) is eligible
+
+
+def test_manual_form_reader_uses_responder_url_and_reports_unavailable(settings, monkeypatch):
+    from src.collectors import google_forms
+
+    link = "https://docs.google.com/forms/d/e/abc/viewform"
+    final = "https://accounts.google.com/signin"
+    calls = []
+
+    async def page(_, url):
+        calls.append(url)
+        return final, BeautifulSoup('<h1>Dev Jr</h1><form action="/formResponse">Currículo</form>', "html.parser")
+
+    monkeypatch.setattr(google_forms, "public_page", page)
+    def read(value):
+        return asyncio.run(google_forms.read_form(None, value, settings.roles))
+
+    with pytest.raises(ValueError):
+        read(link.replace("/viewform", "/edit"))
+    assert not calls
+    assert read(link + "?entry.13=dado").status == "listed" and calls == [link]
+    final = link.replace("viewform", "closedform")
+    assert read(link).status == "closed"

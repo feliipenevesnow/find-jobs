@@ -24,7 +24,7 @@ class JobSpy(BaseCollector):
         if python.name.lower() == "pythonw.exe":
             python = python.with_name("python.exe")
         form_search = query in self.form_queries()
-        hours = max(self.ctx.hours, self.ctx.settings.forms_lookback_days * 24) if form_search else self.ctx.hours
+        hours = self.ctx.form_hours if form_search else self.ctx.hours
         rows = []
         for attempt in range(2):
             process = await asyncio.create_subprocess_exec(

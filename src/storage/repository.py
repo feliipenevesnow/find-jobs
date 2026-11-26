@@ -10,7 +10,7 @@ from src.core.config import AiBudget, Settings
 from src.core.forms import application_form
 from src.core.models import Analysis, Decision, JobPosting, Status, canonical_url, normalized
 from src.filters.profile import read_profile
-from src.filters.rules import application_rejection, evaluate_fit
+from src.filters.rules import evaluate_application
 from src.filters.workplace import available_from_brazil, workplace
 
 SCHEMA = """
@@ -66,8 +66,11 @@ class Repository:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             cols = {row["name"] for row in self.db.execute("PRAGMA table_info(jobs)")}
-            if "source_stats" not in {r["name"] for r in self.db.execute("PRAGMA table_info(hunts)")}:
+            hunt_cols = {r["name"] for r in self.db.execute("PRAGMA table_info(hunts)")}
+            if "source_stats" not in hunt_cols:
                 self.db.execute("ALTER TABLE hunts ADD COLUMN source_stats TEXT NOT NULL DEFAULT '[]'")
+            if "result_ids" not in hunt_cols:
+                self.db.execute("ALTER TABLE hunts ADD COLUMN result_ids TEXT")
             if "url" not in cols:
                 self.db.execute("ALTER TABLE jobs ADD COLUMN url TEXT")
             missing = self.db.execute("SELECT id, posting FROM jobs WHERE url IS NULL").fetchall()
@@ -91,7 +94,7 @@ class Repository:
             records = []
         # Também restaura aprovações que versões anteriores revogaram apenas pelo parecer da IA.
         fields = {"roles", "positive", "blocked", "excluded_areas", "remote", "cities", "stack", "min_score"}
-        policy = ["remote-forms-v1", settings.model_dump(include=fields), [e.model_dump() for e in records]]
+        policy = ["remote-forms-v2", settings.model_dump(include=fields), [e.model_dump() for e in records]]
         signature = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
         try:
             with repo.db:
@@ -109,11 +112,7 @@ class Repository:
                         continue
                     if not job.form_url and job.source != "himalayas":
                         job.form_url = application_form(job.description)
-                    local = evaluate_fit(job, settings, records)
-                    if local.eligible and local.score < settings.min_score:
-                        local = local.model_copy(update={"eligible": False, "reason": "Nota abaixo do mínimo"})
-                    if reason := application_rejection(job):
-                        local = local.model_copy(update={"eligible": False, "reason": reason})
+                    local = evaluate_application(job, settings, records)
                     local = local.model_copy(update={"analysis": old.analysis})
                     repo.db.execute("""UPDATE jobs SET posting=?, decision=?,
                                        eligible_at=CASE WHEN ? THEN coalesce(eligible_at,collected_at) ELSE eligible_at END,
@@ -250,7 +249,7 @@ class Repository:
                     if (previous.url != job.url and previous.active_form and not job.active_form
                             and previous_decision.eligible):
                         return job_id
-                    inputs = {"title", "level", "description", "location", "workplace", "is_remote"}
+                    inputs = {"title", "level", "description", "location", "workplace", "is_remote", "form_details"}
                     if (previous_decision.analysis and not decision.analysis and not decision.ai_unavailable
                             and previous.model_dump(include=inputs) == job.model_dump(include=inputs)
                             and previous_decision.skills == decision.skills and previous_decision.evidence == decision.evidence):
@@ -260,9 +259,11 @@ class Repository:
                         "UPDATE jobs SET posting=?, decision=?, delivery=? WHERE id=?",
                         (job.model_dump_json(), decision.model_dump_json(), approved_state, job_id),
                     )
-                elif keep["exact_url"] and (workplace(job)[0] in ("onsite", "hybrid")
-                                            or not available_from_brazil(job) or job.form_status == "closed"):
-                    # Guarda o histórico e o status, mas retira da seleção uma exigência nova de presença.
+                elif (keep["exact_url"] or keep["url"] == job.url) and (workplace(job.profile_details)[0] in ("onsite", "hybrid")
+                                            or not available_from_brazil(job.profile_details)
+                                            or job.form_status in ("closed", "unrelated")
+                                            or (job.form_checked_at and not keep_approved)):
+                    # Uma nova leitura pode mudar a modalidade, o nível ou o destino da candidatura.
                     self.db.execute("UPDATE jobs SET posting=?, decision=? WHERE id=?",
                                     (job.model_dump_json(), decision.model_dump_json(), job_id))
             elif delivery == "filtered" or (not keep_approved and decision.eligible):
@@ -289,15 +290,17 @@ class Repository:
             job = JobPosting.model_validate_json(row["posting"])
             if not Decision.model_validate_json(row["decision"]).eligible:
                 continue
-            if remote and (workplace(job)[0] != "remote" or not available_from_brazil(job)):
+            if remote and (workplace(job.profile_details)[0] != "remote" or not available_from_brazil(job.profile_details)):
                 continue
             yield row
 
-    def finish_hunt(self, hours: int, listings: int, sources_ok: int, sources_total: int, errors: int, source_stats=()):
+    def finish_hunt(self, hours: int, listings: int, sources_ok: int, sources_total: int, errors: int, source_stats=(),
+                    *, result_ids: set[int] | None = None):
         with self.db:
-            self.db.execute("INSERT INTO hunts(finished,hours,listings,sources_ok,sources_total,errors,source_stats) VALUES(?,?,?,?,?,?,?)",
+            self.db.execute("""INSERT INTO hunts(finished,hours,listings,sources_ok,sources_total,errors,source_stats,result_ids)
+                               VALUES(?,?,?,?,?,?,?,?)""",
                             (datetime.now(timezone.utc).isoformat(), hours, listings, sources_ok, sources_total, errors,
-                             json.dumps(source_stats, ensure_ascii=False)))
+                             json.dumps(source_stats, ensure_ascii=False), json.dumps(sorted(result_ids)) if result_ids is not None else None))
 
     def last_hunt(self):
         return self.db.execute("SELECT * FROM hunts ORDER BY id DESC LIMIT 1").fetchone()
@@ -316,18 +319,21 @@ class Repository:
         return {r[0][4:] for r in self.db.execute(
             "SELECT alias FROM aliases WHERE source=? AND alias LIKE 'url:%'", (source,))}
 
-    def pending(self, cutoff: datetime):
-        return self.db.execute("""SELECT * FROM jobs WHERE delivery='pending' AND eligible_at>=?
+    def pending(self, cutoff: datetime, *, result_ids: set[int] | None = None):
+        period, param = "eligible_at>=?", cutoff.astimezone(timezone.utc).isoformat()
+        if result_ids is not None:
+            period, param = "id IN (SELECT value FROM json_each(?))", json.dumps(sorted(result_ids))
+        return self.db.execute(f"""SELECT * FROM jobs WHERE delivery='pending' AND {period}
                                   AND status IN ('nova','salva')
                                   ORDER BY (json_extract(posting,'$.form_url') IS NOT NULL
-                                            AND coalesce(json_extract(posting,'$.form_status'),'listed')!='closed') DESC,
+                                            AND coalesce(json_extract(posting,'$.form_status'),'listed') IN ('open','listed')) DESC,
                                   json_extract(decision,'$.score') DESC, eligible_at DESC, id""",
-                               (cutoff.astimezone(timezone.utc).isoformat(),)).fetchall()
+                               (param,)).fetchall()
 
     def forms_due(self, cutoff: datetime, checked_before: datetime, limit: int):
         return self.db.execute("""SELECT * FROM jobs WHERE eligible_at>=? AND status IN ('nova','salva')
-                                  AND json_extract(decision,'$.eligible')=1 AND json_extract(posting,'$.form_url') IS NOT NULL
-                                  AND coalesce(json_extract(posting,'$.form_status'),'listed')!='closed'
+                                  AND json_extract(posting,'$.form_url') IS NOT NULL
+                                  AND coalesce(json_extract(posting,'$.form_status'),'listed') IN ('open','listed')
                                   AND coalesce(json_extract(posting,'$.form_checked_at'),'') < ?
                                   ORDER BY json_extract(posting,'$.form_checked_at'), id LIMIT ?""",
                                (cutoff.isoformat(), checked_before.isoformat(), limit)).fetchall()
