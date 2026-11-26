@@ -35,7 +35,7 @@ def test_providers_and_fallback(monkeypatch, job, provider):
             return httpx.Response(200,json=body)
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             scored = await assess(client,provider,"Portfólio em SQL",job,result)
-            assert scored.analysis and scored.eligible and scored.score == 8.5
+            assert scored.analysis.score == 8.5 and scored.eligible and scored.score == result.score
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _:httpx.Response(429))) as client:
             fallback = await assess(client,provider,"SQL",job,result)
             assert fallback.ai_unavailable and fallback.eligible and fallback.score == 7

@@ -1,0 +1,134 @@
+CONTINUIDADE DO BUSCADOR DE VAGAS
+26 de novembro de 2026 · horário de Brasília · projeto find-jobs
+
+ESTADO ATUAL
+
+A retomada foi concluída em 26/11/2026 às 10h09 de Brasília. O banco e o painel foram conferidos. A última coleta teve 672 leituras em 14 fontes, três aprovações na rodada e seis vagas remotas no painel com o histórico da janela. Nenhuma das seis tinha Google Forms. Os 101 testes passaram. A parte final deste arquivo registra as falhas parciais e a situação da IA. Os passos de retomada abaixo também servem para repetir a verificação em outra sessão.
+
+PONTO DE RETOMADA NO MOMENTO DA PAUSA
+
+O buscador já está implementado na árvore de trabalho. Na pausa solicitada pelo usuário, a última tarefa em andamento era uma coleta pública completa com o filtro remoto da Gupy ativado na origem. Essa execução foi interrompida. A suíte já estava verde, com 101 testes. O que faltava era concluir uma coleta com a configuração final, reconstruir o painel, conferir o resultado e atualizar este registro. Consulte também a seção de atualizações ao fim do arquivo.
+
+O projeto está na branch main. O commit de base nesta sessão era 8ee33f0. As alterações estão no disco, inclusive os módulos novos que aparecem como “??” no git status. Não foi feito commit nem push. O painel e o SQLite são dados locais ignorados pelo Git. Uma continuação em outro computador precisa receber também as mudanças ainda não commitadas.
+
+O QUE O USUÁRIO PRECISA
+
+• Trabalhar integralmente de forma remota. Uma ida obrigatória ao escritório já torna a vaga impraticável. O perfil existente é brasileiro, de entrada em desenvolvimento de software, com interesse também em IA. O bloqueio de estágio, pleno, sênior e liderança já existia.
+• Encontrar vagas em empresas de portes variados, inclusive anúncios que só circulam em comunidades ou páginas de recrutamento. O Google Forms é o canal de inscrição preferido. As demais vagas compatíveis também interessam.
+• Usar a cota gratuita de IA em poucas oportunidades nas quais uma segunda leitura possa ajudar. Cargo, modalidade, validade, deduplicação, nota e aprovação precisam funcionar localmente. O parecer do modelo não pode eliminar uma boa vaga.
+
+DIAGNÓSTICO INICIAL
+
+O perfil trazia remote: true e cities: []. O código aceitava presencial quando a lista de cidades estava vazia. No histórico inicial havia 17 aprovações, 15 vindas do LinkedIn e duas do Indeed. A impressão de que tudo vinha do GitHub não correspondia aos dados locais. Faltava mostrar no painel a contribuição de cada fonte.
+
+O fluxo antigo chamava a IA para cada anúncio elegível à medida que os coletores respondiam. A nota do modelo substituía a nota local, e a classificação de senioridade podia reprovar a vaga. A ordem de chegada também podia consumir a cota antes que uma oportunidade melhor fosse encontrada. O limite anterior no YAML era de 1.000 chamadas em 24 horas.
+
+IMPLEMENTAÇÃO E MAPA DO CÓDIGO
+
+1. Modalidade, localização e compatibilidade
+
+src/filters/workplace.py concentra a identificação de remoto integral, híbrido, presencial e modalidade desconhecida. Considera campos estruturados, título, localização, rótulos e trechos da descrição. Evidências de presença obrigatória prevalecem sobre a marcação “remoto”. Há tratamento para negações, opções não marcadas, acesso remoto, entrevistas remotas, encontros presenciais, restrições geográficas declaradas e mais de uma região possível.
+
+src/filters/rules.py aplica essas verificações ao perfil e à janela de tempo. Com remote: true, uma cidade isolada ou um anúncio sem evidência de remoto fica fora. O nível de entrada também pode vir de requisitos explícitos na descrição. A regra de anos de experiência diferencia requisitos de seções de diferenciais. As tecnologias e as evidências do currículo continuam compondo a nota local. A mesma triagem atende a coleta e o comando de avaliação de um TXT.
+
+2. Fontes de descoberta
+
+config.yaml ativa 14 fontes. As seis que já estavam ligadas são Gupy, LinkedIn, Indeed, InfoJobs, Vagas.com e GitHub. Foram acrescentadas Amazon Careers, Greenhouse, Ashby, Himalayas, We Work Remotely, comunidades públicas no Telegram, Hacker News e busca na web. O coletor antigo do Nube continua disponível para outros perfis.
+
+src/collectors/careers.py lê o site oficial da Amazon com filtro Brasil, os murais configurados de Greenhouse e Ashby, a API pública do Himalayas e os feeds de programação de We Work Remotely. Exemplos configurados incluem Canonical, Cloudflare, GitLab, Grupo QuintoAndar, VTEX, Sierra Studio e Supabase. Os murais são extensíveis pelo YAML. No Greenhouse, first_published identifica publicação. No Ashby, workplaceType distingue remoto integral de híbrido. No Himalayas, pubDate é uma atualização da fonte e recebe esse rótulo no painel.
+
+src/collectors/community.py lê e pagina prévias públicas dos canais VagasBRTI e CafeinaVagas. Também consulta cada canal pelos domínios de formulários. src/collectors/hackernews.py procura comentários de empregadores nos tópicos “Who is hiring?”. src/collectors/github.py combina os repositórios de vagas com pesquisa global de issues que mencionam formulários. src/collectors/jobspy.py passa o filtro remoto ao LinkedIn e ao Indeed e faz pesquisas específicas por Forms com uma janela maior. Um resultado dessas pesquisas amplas precisa conter um link de inscrição e atender às regras de recência.
+
+src/collectors/gupy.py envia workplaceType=remote quando o perfil exige remoto. O parâmetro foi verificado na API real. Para “desenvolvedor”, uma amostra sem esse filtro continha presencial, híbrido e remoto. A amostra de oito resultados com o filtro trouxe oito remotos. O anúncio ainda passa pela confirmação local.
+
+src/collectors/web.py encontra endereços pela versão HTML do DuckDuckGo, usa o RSS do Bing se o primeiro índice bloquear a consulta e aceita a API do Brave como alternativa opcional. A configuração padrão dispensa chave de busca. O código lê a página original, seus dados JobPosting ou o anúncio individual e o formulário. Um trecho do índice, sozinho, nunca aprova uma vaga. src/collectors/public_page.py controla o destino público, os redirecionamentos, o tempo e o tamanho dessas leituras. Nenhuma dessas fontes usa LLM para pesquisar.
+
+3. Google Forms
+
+src/core/forms.py reconhece links públicos de resposta de forms.gle e docs.google.com/forms, remove parâmetros pré-preenchidos e procura contexto de candidatura. Considera links em texto, Markdown e botões HTML. O anúncio e o formulário têm endereços separados em src/core/models.py. A existência de Forms identifica o canal de inscrição, sem afirmar quem vai analisar a candidatura.
+
+Um anúncio com formulário confirmado como aberto pode entrar até 30 dias depois da publicação. A janela principal é de 36 horas. Um formulário sem data de publicação precisa ter indícios de recrutamento e inscrições abertas. A data da primeira descoberta vem do banco, sem ser renovada como uma nova publicação a cada rodada. A modalidade é extraída do título ou da apresentação do formulário. Uma pergunta como “você prefere trabalhar remotamente?” não comprova o regime da vaga.
+
+O painel distingue “aberto na consulta” de “indicado no anúncio”. Um Google Forms encerrado que era a única via de inscrição sai da seleção. Se um portal com candidatura própria ainda oferecer a vaga, ele pode continuar como alternativa. Links de formulários de vagas novas ou salvas no histórico recente também entram em uma fila limitada de reverificação. O buscador faz leituras públicas. Ele não preenche nem envia formulários.
+
+4. Seleção e cota da IA
+
+src/core/hunt.py termina a coleta e a triagem local antes de selecionar finalistas. Os formulários têm prioridade, primeiro os confirmados como abertos. A seguir entra a nota local. Anúncios sem descrição suficiente ou sem requisitos ou competências aproveitáveis ficam com a avaliação local. O teto padrão é de 3 novos pareceres por rodada, 6 chamadas e 24.000 tokens em 24 horas, além de 12.000 tokens por minuto.
+
+src/filters/ai.py prepara um recorte do perfil e da descrição, remove contatos e consulta o cache. src/filters/decision_api.py implementa o formato do Gemini Decision configurado nesta instalação. Prompts orientam o avaliador a ignorar instruções dos anúncios, diferenciar exigências de diferenciais e sinalizar incerteza. O controle decisivo está no código: apply_analysis acrescenta o parecer sem trocar aprovação, nota local ou lista local de competências. Falha, resposta inválida, nota zero, senioridade divergente ou cota esgotada preservam a seleção calculada pelas regras.
+
+O modelo configurado no ambiente local é Gemini Decision. As coletas reais feitas nesta sessão usaram --skip-ai. O caminho da IA foi exercitado com respostas HTTP simuladas, incluindo falhas e respostas contraditórias. A revisão automática do ambiente bloqueou uma tentativa de teste real com Gemini porque o pedido poderia transmitir trechos do currículo privado ao serviço. A configuração normal da IA foi preservada. Validar uma chamada real com o currículo é uma decisão separada do usuário. Não há necessidade disso para verificar os coletores ou o painel. No momento da pausa, o banco já registrava 13 chamadas e 14.638 tokens das últimas 24 horas, acima do novo teto de chamadas.
+
+5. Histórico, painel e pontos de entrada
+
+src/storage/repository.py cuida de SQLite, URLs alternativas, deduplicação, reservas de cota, cache de IA e estatísticas de cada fonte. Repository.for_settings reaplica as regras ao histórico quando muda a política do perfil e reavalia antigas reprovações atribuídas à IA. Mantém o estado da candidatura. A prévia trabalha com uma cópia em memória. Uma coleta interrompida pode ter gravado anúncios individuais, mas só uma coleta concluída grava o resumo em hunts.
+
+src/panel.py e src/panel.html exibem o anúncio, a indicação de modalidade, as evidências, a nota local, o eventual parecer da IA e a ação para abrir o formulário. As vagas com Forms aparecem primeiro e há filtro por tipo de inscrição. Em “Fontes da última busca” ficam as leituras, aprovações, formulários e erros de cada fonte, além do consumo local de IA. main.py cobre CLI e painel estático. server.py atende o painel servido por HTTP e os filtros de candidatura. README.md descreve o uso e a configuração. Nenhuma nova dependência precisa ser instalada no ambiente existente.
+
+VERIFICAÇÃO JÁ REALIZADA ATÉ A PAUSA
+
+• Os 66 testes originais passavam antes das alterações. Depois das adaptações e novos casos de regressão, passaram 101 testes. tests/test_discovery.py cobre coletores novos, anúncios estruturados, formulários e redirecionamentos. tests/test_remote_forms.py cobre modalidade, janela ampliada, priorização, orçamento, ausência de veto da IA, restauração de registros antigos e encerramento de formulários.
+• Foram exercitados o servidor local, a CLI e a geração do painel. Os scripts JavaScript do painel estático e do servidor passaram por verificação de sintaxe com Node.
+• A primeira coleta ampla concluída leu 662 ocorrências em 13 fontes. A última completa antes da pausa terminou às 09h50 de Brasília, com 700 leituras, 14 de 14 fontes respondendo, 6 vagas remotas aprovadas e 0 formulários aprovados. Cinco aprovações vieram do LinkedIn e uma do InfoJobs. O DuckDuckGo bloqueou a consulta e o Bing assumiu. A contagem de leituras inclui ocorrências repetidas entre consultas. Uma fonte responder com zero vagas compatíveis é uma observação válida.
+• Em uma checagem avulsa de dois links públicos anunciados, o leitor identificou um Google Forms aberto e um HTTP 404. Eram exemplos para validar a leitura. Nenhum foi inserido manualmente como oportunidade do perfil.
+
+COMO RETOMAR A PARTIR DA PAUSA
+
+Execute os comandos no PowerShell, na raiz do projeto. O atalho “Abrir vagas.cmd” usa a busca diária e pode reaproveitar uma rodada feita hoje. Para concluir uma coleta nova com todas as alterações, use diretamente o comando da etapa 2.
+
+1. Conferir a árvore e a suíte local
+   git status --short --branch
+   .\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_cache/continuacao --tb=line
+   A pasta temporária dentro do projeto evita uma restrição de acesso do ambiente Windows encontrada na primeira execução do pytest.
+
+2. Concluir a coleta interrompida, sem chamada a provedor de IA
+   .\.venv\Scripts\python.exe -X utf8 main.py --skip-ai
+   O processo usa a trava de coleta e reaproveita o SQLite existente. Aguarde a tabela de fontes e a mensagem com o caminho do painel. Uma interrupção anterior não exige apagar o banco nem criar outro histórico.
+
+3. Conferir a entrega
+   .\.venv\Scripts\python.exe -X utf8 main.py --painel
+   .\.venv\Scripts\python.exe -X utf8 main.py --list
+   .\.venv\Scripts\python.exe -X utf8 main.py --uso-ia
+   Verifique data/painel.html e a última linha de hunts em data/vagas.sqlite3. Compare as contagens do painel, das fontes e das candidaturas sem somar duplicatas entre fontes. Registre a situação real dos Forms, ainda que o total seja zero. Para simular outra rodada sem alterar o histórico, use main.py --dry-run --skip-ai.
+
+4. Atualizar o final deste arquivo com a coleta efetivamente concluída. Se uma fonte falhar, anotar a origem e a consequência. Identificar separadamente falhas de consulta, anúncios lidos, vagas elegíveis e inscrições abertas.
+
+LIMITAÇÕES PARA QUEM DER MANUTENÇÃO
+
+A cobertura depende de fontes e anúncios públicos. Índices podem bloquear consultas ou devolver resultados pouco relevantes. Formulários privados, anúncios não indexados e publicações sem indicação de modalidade podem não aparecer. A quantidade de resultados e as consultas são limitadas por configuração. O total de fontes não mede quantas vagas distintas atendem ao perfil. Um formulário tecnicamente aberto também pode continuar publicado depois de o empregador preencher a posição.
+
+Se for necessário ampliar os resultados depois da entrega, o melhor ponto de investigação são fontes públicas brasileiras que contenham anúncios recentes com Forms. Confirme publicação, modalidade e contexto de inscrição em exemplos reais antes de ativar um coletor. Mantenha o teste para inscrição encerrada, vaga híbrida rotulada como remota e resultado duplicado. O usuário pediu qualidade e economia de IA. Aumentar a cota ou relaxar o requisito remoto mudaria o objetivo.
+
+Os exemplos de configuração estão em .env-example e .env.example. O .env e o curriculo.local.md são arquivos privados desta instalação. Este registro é suficiente para retomar o desenvolvimento sem copiá-los.
+
+ATUALIZAÇÕES APÓS A PAUSA
+
+O registro da pausa foi salvo antes de retomar o trabalho. Depois da gravação, a coleta pública foi reiniciada com --skip-ai e terminou normalmente às 10h09min37s de Brasília de 26/11/2026, com código de saída 0.
+
+• Foram 672 leituras, janela principal de 36 horas e ao menos uma consulta bem-sucedida em cada uma das 14 fontes. Passaram duas vagas do LinkedIn e uma do InfoJobs nesta rodada. A combinação com o histórico da janela manteve seis oportunidades remotas visíveis. As aprovações da rodada podem ser reencontros de anúncios já guardados. Zero inscrições por Forms satisfizeram os critérios.
+• Houve cinco falhas parciais. Na busca web, o índice HTML do DuckDuckGo bloqueou uma consulta, houve troca para o Bing, e duas páginas de destino excederam o tempo de conexão. Outras duas consultas do LinkedIn registraram erro no JobSpy. As fontes independentes continuaram a coleta.
+• Os comandos --painel, --list e --uso-ia terminaram com sucesso. O painel reconstruído contém seis cartões remotos, a tabela das 14 fontes e o filtro de Google Forms. A verificação de integridade do SQLite retornou “ok”.
+• Os 101 testes passaram novamente após a retomada. Uma verificação funcional do JavaScript com cartões de exemplo confirmou a prioridade dos Forms, o filtro por canal, a busca textual e a ordenação por nota.
+• O consumo registrado permaneceu em 13 chamadas e 14.638 tokens nas últimas 24 horas. Nenhuma chamada nova ao Gemini foi feita pela coleta. No uso normal, o provedor configurado volta a poder atender finalistas quando houver orçamento disponível.
+
+PARA A PRÓXIMA IA
+
+O trabalho de implementação e a coleta final acima estão concluídos. O teste do provedor real com trechos do currículo permanece sem execução neste ambiente pelo motivo registrado na seção 4. Os caminhos de seleção, proteção de cota, cache e falha do provedor estão cobertos pelos testes simulados. Para avaliar o próximo ganho de cobertura, acompanhe principalmente a quantidade de candidaturas por Forms que realmente passam nos filtros ao longo de várias rodadas. Este resultado de um dia deve ser interpretado junto com os erros e as datas das fontes.
+
+REVISÃO DE DESCOBERTA DE FORMS E FONTES PÚBLICAS (26/11/2026 · 10h51 BRT)
+
+Diagnóstico confirmado nas fontes reais:
+
+• Busca web (src/collectors/web.py): o endpoint HTML do DuckDuckGo respondia HTTP 202 com desafio logo na primeira consulta, ativando o fallback RSS do Bing. O RSS do Bing ignorava operadores site: e aspas, trazendo portais institucionais e páginas de login do Google Forms (esgotando web_pages_per_query sem anúncios úteis). Além disso, form_posting() descartava formulários abertos com título genérico quando o cargo aparecia em parágrafo acima de 200 caracteres na apresentação.
+• Extração de Forms (src/core/forms.py): links encapsulados em redirecionadores (LinkedIn, Google, Facebook, Instagram) e URLs públicas /forms/d/e/<id> sem /viewform não eram desempacotados nem normalizados; rótulos comuns em português (interessados, cadastre, concorrer, seletiva, formulário da vaga) também não eram reconhecidos.
+• Comunidades no Telegram (src/collectors/community.py): os canais VagasBRTI e CafeinaVagas estavam sem publicações nos últimos 30 dias; canais ativos em 11/2026 (vagasbackend, vagasfullstack, vagas_dev) usam cartões com rótulos (📜 Título:, 📋 Descrição:, 🏢 Empresa:, 🌍 Local:) e hashtags inline.
+• GitHub Issues (src/collectors/github.py): a pesquisa global exigia "remoto" literalmente em in:body, zerando resultados quando a modalidade vinha no título ou nas labels; foram adicionados repositórios brasileiros ativos em config.yaml.
+• LinkedIn via JobSpy (src/collectors/jobspy.py): erros 429 nas últimas consultas em sequência foram mitigados com pausa maior entre consultas e nova tentativa antes de falhar.
+• Nova fonte brasileira: adicionado ProgramaThor (https://programathor.com.br/jobs-city/remoto?expertise=Júnior) em src/collectors/careers.py (JSON-LD JobPosting e detecção de Forms). A consulta ?expertise=Trainee foi removida após retornar HTTP 404 na origem.
+
+Correções e verificações executadas após as edições:
+
+• Suíte de testes: .\.venv\Scripts\python.exe -m pytest -q -o cache_dir=build/pytest_cache --basetemp=build/pytest_tmp --tb=short -> 104 passed in 3.62s (incluindo novos testes para Yahoo BR /RU=/, redirecionadores com Forms, cartões estruturados do Telegram e ProgramaThor).
+• Coleta pública real (.\.venv\Scripts\python.exe -X utf8 main.py --skip-ai, hunt #7 em 26/11/2026 às 10h51 de Brasília): 760 leituras em 15 fontes, 14 de 15 fontes responderam e 6 aprovações na rodada (4 do LinkedIn, 1 de comunidades no Telegram — t.me/vagasbackend/102035 — e 1 do InfoJobs). O painel (data/painel.html) passou a exibir 8 vagas remotas ativas, mantendo 0 vagas com Google Forms aprovadas após os filtros (remoto integral + nível de entrada + inscrição não-ruído).
+• Falhas parciais na coleta #7 (12 erros no total): na busca web, 3 consultas no Yahoo retornaram HTTP 500 transitório com fallback para o Bing RSS e 8 páginas de destino retornaram HTTP 400/403/404; no ProgramaThor, a listagem Júnior recebeu HTTP 429 após múltiplas requisições em sequência na mesma sessão de diagnóstico. LinkedIn (10/10 consultas), comunidades (15/15) e GitHub (10/10) concluíram com 0 erros.
+• Banco SQLite e IA: PRAGMA integrity_check retornou "ok"; consumo registrado permaneceu em 13/6 chamadas e 14638/24000 tokens (zero chamadas novas na coleta --skip-ai).

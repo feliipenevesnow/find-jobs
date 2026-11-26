@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from src.core.config import Settings
 from src.core.models import Decision, Evidence, JobDetails, JobPosting, normalized, plain
 from src.filters.profile import extra_credit, has_term, relevant_evidence
+from src.filters.workplace import available_from_brazil, workplace
 
 
 def contains_any(text: str, terms: list[str]) -> bool:
@@ -27,10 +28,54 @@ DISCOVERY_WINDOW = "Inventário inicial ou intervalo de descoberta fora da janel
 OLD_DAY = "O dia informado pelo portal é anterior à janela"
 OUTSIDE_WINDOW = "Publicação fora da janela ou sem data verificável"
 TIME_FILTERS = {DISCOVERY_WINDOW, OLD_DAY, OUTSIDE_WINDOW}
+ENTRY_DESCRIPTION = re.compile(
+    r"\b(?:sem experiencia (?:previa|profissional)|nao (?:e necessario ter|exigimos) experiencia|"
+    r"primeir[oa] (?:emprego|oportunidade profissional)|aceitamos (?:iniciantes|recem.formados)|"
+    r"no (?:prior|professional|previous) experience (?:is )?(?:required|necessary)|"
+    r"recent graduates (?:are )?(?:welcome|encouraged)|entry.level (?:role|position)|"
+    r"(?:vaga|nivel|senioridade|posicao)\s*[:=-]?\s*(?:junior|jr|trainee))\b"
+)
+
+
+def location_rejection(job: JobDetails, settings: Settings) -> str | None:
+    mode, _ = workplace(job)
+    if settings.remote:
+        if mode == "unknown":
+            return "Trabalho remoto não confirmado no anúncio"
+        if mode != "remote":
+            return "A vaga exige ou prevê trabalho presencial"
+        if not available_from_brazil(job):
+            return "Vaga remota com restrição geográfica fora do Brasil"
+    elif mode == "remote":
+        return "Modalidade remota desativada"
+    else:
+        city_match = any(has_term(normalized(job.location), normalized(c)) for c in settings.cities)
+        if settings.cities and not city_match:
+            return "Localização fora do perfil"
+        if job.source in ("linkedin", "indeed") and not city_match and not contains_any(job.location, ["Brasil", "Brazil"]):
+            return "Localização presencial no Brasil não confirmada"
+    return None
+
+
+def application_rejection(job: JobPosting) -> str | None:
+    direct_boards = {"gupy", "amazon", "greenhouse", "ashby", "linkedin", "indeed", "vagascom", "infojobs"}
+    if job.form_status == "closed" and job.source not in direct_boards:
+        return "O formulário encerrou as inscrições"
+    if job.precision == "first_seen" and job.form_status != "open":
+        return "Formulário sem confirmação de inscrições abertas"
+    return None
 
 
 def requires_experience(description: str) -> bool:
+    optional_section = False
     for part in re.split(r"[.!?;\n•]+", plain(description)):
+        section = part.strip(" #*-:\t")
+        if re.match(r"^(diferenciais|desejaveis|nice.to.have|preferred qualifications|bonus points)\b", section):
+            optional_section = True
+        if re.match(r"^(requisitos|obrigatorios|minimum qualifications|basic qualifications|required|requirements)\b", section):
+            optional_section = False
+        if optional_section and not re.search(r"\b(?:obrigatori[oa]|mandatory|required)\b", part):
+            continue
         for match in EXPERIENCE.finditer(part):
             # Limites superiores de faixas (1 a 3 anos) não são o mínimo exigido.
             prefix = part[max(0, match.start()-25):match.start()]
@@ -44,11 +89,18 @@ def requires_experience(description: str) -> bool:
 
 
 def evaluate(job: JobPosting, settings: Settings, cutoff: datetime, now: datetime,
-             previous_nube: datetime | None = None, records: list[Evidence] | None = None) -> Decision:
+             previous_nube: datetime | None = None, records: list[Evidence] | None = None,
+             *, first_seen: datetime | None = None) -> Decision:
     def reject(reason: str) -> Decision:
         return Decision(eligible=False, reason=reason)
 
-    if job.precision == "discovery":
+    if job.form_url and job.form_status == "open" and job.precision in ("timestamp", "day"):
+        cutoff = min(cutoff, now - timedelta(days=settings.forms_lookback_days))
+    if job.precision in ("first_seen", "updated"):
+        when = first_seen if job.precision == "first_seen" else job.updated_at
+        if not when or not cutoff <= when <= now:
+            return reject(OUTSIDE_WINDOW)
+    elif job.precision == "discovery":
         if previous_nube is None or previous_nube < cutoff:
             return reject(DISCOVERY_WINDOW)
     elif job.precision == "native":
@@ -57,6 +109,8 @@ def evaluate(job: JobPosting, settings: Settings, cutoff: datetime, now: datetim
     else:
         if not job.published_at or job.published_at < cutoff or job.published_at > now:
             return reject(OUTSIDE_WINDOW)
+    if reason := application_rejection(job):
+        return reject(reason)
     return evaluate_fit(job, settings, records)
 
 
@@ -76,7 +130,7 @@ def evaluate_fit(job: JobDetails, settings: Settings, records: list[Evidence] | 
         ):
             return reject("Título misto júnior/pleno. O perfil bloqueia pleno.")
         return reject("Senioridade acima do perfil")
-    if not contains_any(job.title + " " + job.level, settings.positive):
+    if not contains_any(job.title + " " + job.level, settings.positive) and not ENTRY_DESCRIPTION.search(plain(job.description)):
         return reject("Nível de entrada não identificado")
     if not contains_any(job.title, settings.roles):
         return reject("Cargo fora do perfil")
@@ -90,15 +144,8 @@ def evaluate_fit(job: JobDetails, settings: Settings, records: list[Evidence] | 
         return reject("Área de desenvolvimento fora de software")
     if requires_experience(job.description):
         return reject("Exige três ou mais anos de experiência")
-    if job.is_remote:
-        if not settings.remote:
-            return reject("Modalidade remota desativada")
-    else:
-        city_match = any(has_term(normalized(job.location), normalized(c)) for c in settings.cities)
-        if settings.cities and not city_match:
-            return reject("Localização fora do perfil")
-        if job.source in ("linkedin", "indeed") and not city_match and not contains_any(job.location, ["Brasil", "Brazil"]):
-            return reject("Localização presencial no Brasil não confirmada")
+    if reason := location_rejection(job, settings):
+        return reject(reason)
     skills = [s for s in settings.stack if has_term(text, s)]
     score = min(10, 6.5 + 0.7 * len(skills) + extra_credit(evidence, skills))
     return Decision(eligible=True, reason="Aprovada pelas regras", score=round(score, 1), skills=skills, evidence=evidence)

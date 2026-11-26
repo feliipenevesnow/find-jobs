@@ -52,7 +52,8 @@ def test_persistent_cache_and_daily_limit(tmp_path, job, decision):
                 assert (await review(first, preview=True)).ai_unavailable
                 assert tuple(first.ai_usage()) == (0, 0)
                 scored = await review(first)
-                assert scored.score == 8 and scored.analysis.skills_faltantes == ["Kubernetes"]
+                assert scored.score == decision.score and scored.analysis.score == 8
+                assert scored.analysis.skills_faltantes == ["Kubernetes"]
                 assert scored.analysis.red_flags == [decision_api.FLAGS["tecnica"]]
             second = Repository(path)
             with closing(second.db):

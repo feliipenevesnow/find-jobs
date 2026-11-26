@@ -21,5 +21,5 @@ def now():
 def job(now):
     return JobPosting(title="Desenvolvedor Mobile Júnior", company="Ação Digital",
                       url="https://empresa.test/jobs/123?utm_source=vagas", source="gupy",
-                      location="Curitiba, Brasil", published_at=now, precision="timestamp",
+                      location="Curitiba, Brasil", is_remote=True, published_at=now, precision="timestamp",
                       description="Construir APIs com Python, Git e SQL.")

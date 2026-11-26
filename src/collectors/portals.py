@@ -34,8 +34,8 @@ class HtmlBoard(BaseCollector):
             stamp, precision = parse_time(row.get("date_posted"))
             yield JobPosting(source=self.name, title=row["title"], url=row["job_url"],
                              company=row["company"], location=row["location"], level=row.get("level", ""),
-                             is_remote=row.get("remote", False) or contains_any(row["location"] + " " + row["title"], ["remoto", "home office"]),
-                             description=row["description"], published_at=stamp, precision=precision)
+                             is_remote=row.get("remote", False), workplace=row.get("workplace", "unknown"),
+                             description=row["description"], form_url=row.get("form_url"), published_at=stamp, precision=precision)
 
 
 class Nube(BaseCollector):

@@ -3,11 +3,13 @@ import asyncio
 import logging
 import math
 import os
+import re
 import sqlite3
 import sys
 import webbrowser
 from contextlib import closing
 from datetime import datetime, time as dt_time, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,16 +36,17 @@ def review_text(path: Path, settings: Settings, console: Console) -> None:
     if len(lines) < 2:
         raise ValueError("Informe o título na primeira linha do TXT e a descrição nas seguintes.")
     title, *body = lines
-    # Uma linha curta logo após o título pode identificar a localização ou a modalidade.
-    location_lines = []
+    location = ""
     for line in body[:2]:
-        if len(line) > 80 or line.endswith("."):
+        label = re.match(r"^(?:local(?:ização)?|modalidade|regime)\s*:\s*(.+)", line, re.I)
+        if label:
+            location = label[1]
             break
-        location_lines.append(line)
-    labels = {normalized(s) for s in [*location_lines, *title.split("|")]}
-    job = JobDetails(title=title, description="\n".join(body), source="arquivo",
-                     location=" ".join(location_lines),
-                     is_remote=bool(labels & {"remoto", "remota", "remote", "home office", "100 remoto"}))
+        if len(line) < 80 and (normalized(line) in {"remoto", "remota", "remote", "home office", "presencial", "hibrido"}
+                               or (not settings.remote and "," in line)):
+            location = line
+            break
+    job = JobDetails(title=title, description="\n".join(body), source="arquivo", location=location)
     _, records = read_profile(settings.resume)
     decision = evaluate_fit(job, settings, records)
     console.print(Text(job.title, style="bold"))
@@ -90,21 +93,22 @@ def main() -> int:
         if args.avaliar_arquivo:
             review_text(args.avaliar_arquivo, settings, console)
             return 0
-        repo = Repository(settings.database, preview=args.dry_run or args.list or args.uso_ia or args.painel)
+        repo = Repository.for_settings(settings, preview=args.dry_run or args.list or args.uso_ia or args.painel)
         if args.uso_ia:
             print_ai_usage(console, repo, settings)
             return 0
         if args.list:
-            table = Table("ID", "Vaga", "Fonte", "Candidatura", "Anúncio", header_style="cyan")
-            for row in repo.approved().fetchmany(50):
+            table = Table("ID", "Vaga", "Fonte", "Candidatura", "Anúncio / Google Forms", header_style="cyan")
+            for row in islice(repo.visible_approved(settings.remote), 50):
                 job = JobPosting.model_validate_json(row["posting"])
-                table.add_row(str(row["id"]), Text(job.title), job.source, row["status"], Text(job.url))
+                links = job.url + ("\nGoogle Forms · " + job.active_form if job.active_form and job.active_form != job.url else "")
+                table.add_row(str(row["id"]), Text(job.title), job.source, row["status"], Text(links))
             console.print(table)
             return 0
         if args.status:
             ok = repo.set_status(int(args.status[0]), args.status[1])
             if ok:
-                write_panel(repo, settings.database.parent)
+                write_panel(repo, settings.database.parent, settings)
             console.print("Registro atualizado." if ok else "Nenhum registro aplicável para esse ID.")
             return 0 if ok else 1
         hours = args.hours or settings.hours
@@ -112,7 +116,7 @@ def main() -> int:
             return asyncio.run(hunt(settings, repo, hours, True, args.skip_ai, console))
         code = 0
         if args.painel:
-            panel = write_panel(repo, settings.database.parent)
+            panel = write_panel(repo, settings.database.parent, settings)
         else:
             # A tarefa do Windows e a abertura manual podem chegar no mesmo minuto.
             # Um banco separado mantém a leitura das vagas livre durante a coleta.
@@ -143,7 +147,7 @@ def main() -> int:
                                   datetime.fromisoformat(last["finished"]).astimezone().date() == datetime.now().date())
                     if not args.diaria or not done_today:
                         code = asyncio.run(hunt(settings, repo, hours, False, args.skip_ai, console))
-                panel = write_panel(repo, settings.database.parent)
+                panel = write_panel(repo, settings.database.parent, settings)
         console.print(Text(f"Painel local · {panel}"))
         if args.abrir:
             webbrowser.open(panel.resolve().as_uri())

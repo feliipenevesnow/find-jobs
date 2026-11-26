@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable
@@ -11,6 +12,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from src.core.config import Settings
+from src.core.forms import google_form_url
 from src.core.models import JobPosting, Precision
 
 BR = ZoneInfo("America/Sao_Paulo")
@@ -18,11 +20,20 @@ log = logging.getLogger("coleta")
 
 
 def content(value: str | None) -> str:
-    return BeautifulSoup(value or "", "html.parser").get_text(" ", strip=True)
+    if not value:
+        return ""
+    soup = BeautifulSoup(value, "html.parser")
+    for anchor in soup.select("a[href]"):
+        url = google_form_url(anchor["href"])
+        if url and url not in anchor.get_text():
+            anchor.append(" " + url)
+    for tag in soup.find_all(["p", "br", "li", "div"]):
+        tag.append("\n")
+    return soup.get_text(" ").strip()
 
 
 def parse_time(value: str | None) -> tuple[datetime | None, Precision]:
-    if not value:
+    if not isinstance(value, str) or not value:
         return None, "unknown"
     try:
         if len(value) == 10:
@@ -47,6 +58,10 @@ class Context:
     @property
     def cutoff(self) -> datetime:
         return self.now - timedelta(hours=self.hours)
+
+    @property
+    def form_cutoff(self) -> datetime:
+        return min(self.cutoff, self.now - timedelta(days=self.settings.forms_lookback_days))
 
 
 class BaseCollector(ABC):
@@ -96,3 +111,32 @@ def safe_error(error: Exception) -> str:
     if isinstance(error, (RuntimeError, TimeoutError)):
         return str(error)[:180] or type(error).__name__
     return type(error).__name__
+
+
+def schema_jobs(soup):
+    for tag in soup.select('script[type="application/ld+json"]'):
+        try:
+            value = json.loads(tag.string or "")
+        except ValueError:
+            continue
+        queue = value[:] if isinstance(value, list) else [value]
+        while queue:
+            item = queue.pop()
+            if not isinstance(item, dict):
+                continue
+            for key in ("@graph", "mainEntity"):
+                nested = item.get(key, [])
+                queue.extend(nested if isinstance(nested, list) else [nested])
+            types = item.get("@type", [])
+            if "JobPosting" in (types if isinstance(types, list) else [types]):
+                yield item
+
+
+def names(value) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    result = []
+    for item in values:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name:
+            result.append(name)
+    return result

@@ -311,6 +311,8 @@ LIVE_UI_SNIPPET = """
   if (searchEl) searchEl.addEventListener('input', applyExtraFilters);
   if (periodEl) periodEl.addEventListener('change', applyExtraFilters);
   if (sortEl) sortEl.addEventListener('change', applyExtraFilters);
+  const formEl = document.querySelector('#form-filter');
+  if (formEl) formEl.addEventListener('change', applyExtraFilters);
   applyExtraFilters();
 })();
 </script>
@@ -341,12 +343,16 @@ def next_alarm_label(now_br: datetime) -> str:
     return f"amanhã às {MORNING_ALARM_HOUR:02d}:00 (vagas do dia anterior)"
 
 
-def ensure_panel_exists(settings: Settings) -> Path:
+def ensure_panel_exists(settings: Settings, config_path: Path | None = None) -> Path:
     panel_path = settings.database.parent / "painel.html"
-    if not panel_path.is_file():
-        repo = Repository(settings.database)
+    template = ROOT / "src" / "panel.html"
+    inputs = [template, template.with_suffix(".py"), settings.resume]
+    if config_path:
+        inputs.append(config_path)
+    if not panel_path.is_file() or any(p.is_file() and p.stat().st_mtime > panel_path.stat().st_mtime for p in inputs):
+        repo = Repository.for_settings(settings)
         try:
-            write_panel(repo, settings.database.parent)
+            write_panel(repo, settings.database.parent, settings)
         finally:
             repo.db.close()
     return panel_path
@@ -379,17 +385,17 @@ def run_hunt_sync(
 
         with closing(sqlite3.connect(gate, timeout=1800)) as lock:
             lock.execute("BEGIN EXCLUSIVE")
-            repo = Repository(settings.database)
+            repo = Repository.for_settings(settings)
             if alarm_slot:
                 cp = repo.checkpoint(alarm_slot)
                 if cp and cp.astimezone(BR).date() == datetime.now(BR).date():
-                    write_panel(repo, settings.database.parent)
+                    write_panel(repo, settings.database.parent, settings)
                     return True
             log.info("Iniciando coleta de vagas (motivo=%s, janela=%dh)...", SERVER_STATE["current_reason"], hours)
             code = asyncio.run(hunt(settings, repo, hours, False, skip_ai, console))
             if code == 0 and alarm_slot:
                 repo.complete(alarm_slot, datetime.now(timezone.utc))
-            write_panel(repo, settings.database.parent)
+            write_panel(repo, settings.database.parent, settings)
         return True
     except Exception as exc:
         SERVER_STATE["last_error"] = str(exc)
@@ -405,11 +411,11 @@ def run_hunt_sync(
 
 def read_jobs_map_and_stats(settings: Settings) -> tuple[dict, dict]:
     now_br = datetime.now(BR)
-    repo = Repository(settings.database)
+    repo = Repository.for_settings(settings)
     try:
         jobs_map = {}
         approved_count = 0
-        for row in repo.approved():
+        for row in repo.visible_approved(settings.remote):
             approved_count += 1
             posting = JobPosting.model_validate_json(row["posting"])
             jobs_map[posting.url] = {
@@ -435,7 +441,7 @@ def read_jobs_map_and_stats(settings: Settings) -> tuple[dict, dict]:
 
 def render_live_panel(config_path: Path) -> bytes:
     settings = Settings.read(config_path.resolve())
-    panel_path = ensure_panel_exists(settings)
+    panel_path = ensure_panel_exists(settings, config_path)
     html = panel_path.read_text(encoding="utf-8")
     jobs_map, stats = read_jobs_map_and_stats(settings)
     alarm_info = {"next_label": stats["next_alarm"]}
@@ -455,12 +461,12 @@ def render_live_panel(config_path: Path) -> bytes:
 def check_and_fire_alarms(config_path: Path) -> None:
     now_br = datetime.now(BR)
     settings = Settings.read(config_path.resolve())
-    repo = Repository(settings.database)
+    repo = Repository.for_settings(settings)
     try:
         cp_morning = repo.checkpoint("alarme_manha")
         cp_evening = repo.checkpoint("alarme_noite")
         last = repo.last_hunt()
-        has_approved = repo.approved().fetchone() is not None
+        has_approved = next(repo.visible_approved(settings.remote), None) is not None
     finally:
         repo.db.close()
 
@@ -593,11 +599,11 @@ def make_handler(config_path: Path):
                     return
 
                 settings = Settings.read(config_path.resolve())
-                repo = Repository(settings.database)
+                repo = Repository.for_settings(settings)
                 try:
                     updated = repo.set_status(job_id, status)
                     if updated:
-                        write_panel(repo, settings.database.parent)
+                        write_panel(repo, settings.database.parent, settings)
                 finally:
                     repo.db.close()
 

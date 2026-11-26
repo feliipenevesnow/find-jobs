@@ -30,6 +30,7 @@ def test_gupy_detail_and_publication(settings, now, monkeypatch):
     def handler(request):
         if request.url.host == "portal.gupy.io":
             assert request.url.path.endswith("/api/job-search/jobs")
+            assert request.url.params["workplaceType"] == "remote"
             return httpx.Response(200,json={"data":[{"name":"Desenvolvedor Jr","careerPageName":"Exemplo",
                 "publishedDate":now.isoformat(),"jobUrl":"https://exemplo.gupy.io/jobs/23","workplaceType":"remote"}]})
         return httpx.Response(200,text='<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"job":{"description":"<p>Python</p>","prerequisites":"SQL"}}}}</script>')
@@ -44,11 +45,14 @@ def test_github_isolates_failing_repo_and_skips_pr(settings, now, monkeypatch):
     def handler(request):
         if "broken" in request.url.path:
             return httpx.Response(403)
+        if request.url.path == "/search/issues":
+            assert "in:body" in request.url.params["q"]
+            return httpx.Response(200, json={"items": []})
         row={"title":"[Remoto] Dev Jr na Empresa","html_url":"https://github.com/good/repo/issues/7",
              "created_at":now.isoformat(),"body":"Python","labels":[{"name":"Júnior"}]}
         return httpx.Response(200,json=[{**row,"pull_request":{}},row,{**row,"created_at":(now-timedelta(days=5)).isoformat()}])
     jobs,source=collect(Github,"github",settings,now,handler)
-    assert source.errors==source.successes==1
+    assert source.errors==1 and source.successes==3
     assert len(jobs)==1 and jobs[0].company=="Empresa" and jobs[0].is_remote
 
 
@@ -89,7 +93,9 @@ def test_jobspy_native_window_and_clean_url(settings, now, monkeypatch):
     import json
     settings.search_terms = ["dev"]
     async def launch(*args, **kwargs):
-        assert args[-4:] == ("indeed", "dev", "2", str(settings.results_per_search))
+        term = args[-4]
+        expected_hours = "2" if term == "dev" else str(settings.forms_lookback_days * 24)
+        assert args[-5:] == ("indeed", term, expected_hours, str(settings.results_per_search), "1")
         class Result:
             returncode = 0
             async def communicate(self):
@@ -101,5 +107,5 @@ def test_jobspy_native_window_and_clean_url(settings, now, monkeypatch):
     monkeypatch.setattr(asyncio,"create_subprocess_exec",launch)
     monkeypatch.setattr(asyncio,"sleep",instant)
     jobs,source = collect(JobSpy,"indeed",settings,now,lambda _:httpx.Response(500))
-    assert source.successes == 1 and jobs[0].precision == "native" and "5000" in jobs[0].salary
+    assert source.successes == 3 and len(jobs) == 1 and jobs[0].precision == "native" and "5000" in jobs[0].salary
     assert jobs[0].url == "https://br.indeed.com/viewjob?jk=123"

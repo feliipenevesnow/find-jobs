@@ -61,6 +61,7 @@ def test_remote_hunt_filters_before_ai_and_keeps_jobs_when_quota_ends(monkeypatc
         async def fetch(self, query):
             for index, title in enumerate(["Desenvolvedor Sênior", "Desenvolvedor Mobile Júnior", "Desenvolvedor Web Júnior"]):
                 yield job.model_copy(update={"title": title, "url": f"https://example.test/{index}",
+                                             "description": "Requisitos obrigatórios para desenvolver APIs com Python, Git e SQL.",
                                              "published_at": datetime.now(timezone.utc)})
 
     calls = []

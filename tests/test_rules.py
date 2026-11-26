@@ -19,6 +19,8 @@ def test_normalize_url_preserves_identity():
     ("Somos uma empresa com 12 anos de mercado", False), ("Experiência de 1 ano", False),
     ("Experiência de 3 anos é um diferencial", False), ("De 1 a 3 anos de experiência", False),
     ("Experiência de 1 a 3 anos", False), ("4 anos de desenvolvimento de sistemas", True),
+    ("Diferenciais:\n4 anos de experiência em Python.", False),
+    ("Diferenciais:\nPython.\nRequisitos:\n4 anos de experiência profissional.", True),
 ])
 def test_required_years(text, blocked):
     assert requires_experience(text) is blocked
@@ -53,5 +55,8 @@ def test_day_precision_and_city(job, settings, now):
     item = job.model_copy(update={"precision":"day","published_at":now.replace(hour=3)})
     assert not evaluate(item, settings, now-timedelta(hours=2), now).eligible
     settings.cities = ["São Paulo"]
-    assert not evaluate(job, settings, now-timedelta(days=1), now).eligible
+    assert not evaluate(job.model_copy(update={"is_remote":False}), settings, now-timedelta(days=1), now).eligible
     assert evaluate(job.model_copy(update={"is_remote":True}), settings, now-timedelta(days=1), now).eligible
+    settings.remote = False
+    assert not evaluate(job, settings, now-timedelta(days=1), now).eligible
+    assert evaluate(job.model_copy(update={"is_remote":False, "location":"São Paulo"}), settings, now-timedelta(days=1), now).eligible

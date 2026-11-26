@@ -43,7 +43,11 @@ a:hover,summary:hover{text-decoration:underline}
 .tags{display:flex;flex-wrap:wrap;gap:.35rem;list-style:none;padding:0;margin:1rem 0}
 .tags:empty{margin:.6rem 0}
 .tags li{background:#f0f3ee;border-radius:1rem;padding:.16rem .6rem;font-size:.78rem}
-.actions{border-top:1px solid var(--line);padding-top:.9rem;margin-top:.8rem;align-items:start}
+.actions{border-top:1px solid var(--line);padding-top:.9rem;margin-top:.8rem;align-items:start;flex-wrap:wrap}
+a.form-link{background:var(--pine);color:white;border-radius:.4rem;padding:.28rem .65rem;font-size:.88rem;text-decoration:none}
+.form-note{font-size:.85rem;color:var(--pine);margin:.4rem 0;font-weight:650}
+.coverage{margin:-.8rem 0 1.4rem;overflow:auto}.coverage table{border-collapse:collapse;margin-top:.5rem;font-size:.85rem}
+.coverage th,.coverage td{text-align:left;padding:.3rem .65rem;border-bottom:1px solid var(--line)}
 details{min-width:0}
 details ul{padding-left:1.2rem;font-size:.88rem}
 details li+li{margin-top:.45rem}
@@ -59,10 +63,12 @@ summary,.open{color:var(--pine);font-weight:650;font-size:.89rem;cursor:pointer}
 <main class="wrap">
 <h1>Minhas vagas</h1>
 <p class="summary">$summary</p>
+$coverage
 <section aria-label="Filtrar oportunidades" class="tools">
 <label class="search">Buscar no histórico<input type="search" id="search" placeholder="Cargo, empresa ou tecnologia"></label>
 <label>Encontradas<select id="period"><option value="0">Todo o histórico salvo</option><option value="1">Últimas 24 horas</option><option value="7">Últimos 7 dias</option></select></label>
-<label>Ordenar por<select id="sort"><option value="time">Mais recentes</option><option value="score">Maior aderência</option></select></label>
+<label>Inscrição<select id="form-filter"><option value="all">Todos os canais</option><option value="form">Google Forms</option></select></label>
+<label>Ordenar por<select id="sort"><option value="priority">Google Forms primeiro</option><option value="time">Mais recentes</option><option value="score">Maior aderência</option></select></label>
 </section>
 <p id="count" class="count" aria-live="polite">$count oportunidade(s)</p>
 <div id="grid" class="grid">$cards</div>
@@ -71,15 +77,21 @@ summary,.open{color:var(--pine);font-weight:650;font-size:.89rem;cursor:pointer}
 <script>
 const search = document.querySelector('#search'), period = document.querySelector('#period'), sort = document.querySelector('#sort');
 const grid = document.querySelector('#grid'), cards = Array.from(grid.children), empty = document.querySelector('#empty');
+const formFilter = document.querySelector('#form-filter');
 const fold = value => value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('pt-BR');
 const texts = new Map(cards.map(card => [card, fold(card.textContent)]));
 function update() {
   const floor = Number(period.value) ? Date.now()/1000 - Number(period.value)*86400 : 0;
   const term = fold(search.value.trim());
   let count = 0;
-  cards.sort((a,b) => Number(b.dataset[sort.value])-Number(a.dataset[sort.value]) || Number(b.dataset.time)-Number(a.dataset.time));
+  cards.sort((a,b) => {
+    if (sort.value === 'priority') {
+      return Number(b.dataset.form)-Number(a.dataset.form) || Number(b.dataset.score)-Number(a.dataset.score) || Number(b.dataset.time)-Number(a.dataset.time);
+    }
+    return Number(b.dataset[sort.value])-Number(a.dataset[sort.value]) || Number(b.dataset.time)-Number(a.dataset.time);
+  });
   for (const card of cards) {
-    card.hidden = Number(card.dataset.time) < floor || !texts.get(card).includes(term);
+    card.hidden = Number(card.dataset.time) < floor || !texts.get(card).includes(term) || (formFilter.value === 'form' && card.dataset.form !== '1');
     if (!card.hidden) count++;
     grid.append(card);
   }
@@ -89,6 +101,7 @@ function update() {
 }
 search.addEventListener('input',update);
 period.addEventListener('change',update);
+formFilter.addEventListener('change',update);
 sort.addEventListener('change',update);
 update();
 </script>

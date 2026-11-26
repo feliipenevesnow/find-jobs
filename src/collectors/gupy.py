@@ -20,6 +20,8 @@ class Gupy(BaseCollector):
         for offset in range(0, limit, 50):
             params = {"jobName": query, "offset": offset, "limit": min(50, limit - offset),
                       "sortBy": "publishedDate", "sortOrder": "desc"}
+            if self.ctx.settings.remote:
+                params["workplaceType"] = "remote"
             response = await self.get(self.endpoint, params=params)
             rows = response.json()["data"]
             if not isinstance(rows, list):
@@ -34,13 +36,17 @@ class Gupy(BaseCollector):
                 stamp, precision = parse_time(row.get("publishedDate"))
                 if row.get("type") == "vacancy_type_talent_pool":
                     continue
+                modes = {"remote": "remote", "hybrid": "hybrid", "on-site": "onsite", "on_site": "onsite",
+                         "onsite": "onsite", "in-person": "onsite", "in_person": "onsite"}
+                mode = modes.get((row.get("workplaceType") or "").lower(), "unknown")
                 job = JobPosting(
                     source=self.name, title=row["name"], company=row.get("careerPageName") or "",
                     location=", ".join(filter(None, [row.get("city"), row.get("state")])),
-                    is_remote=row.get("workplaceType") == "remote",
+                    is_remote=mode == "remote", workplace=mode,
                     url=url, published_at=stamp, precision=precision, description=content(row.get("description")),
                 )
-                if stamp and stamp >= self.ctx.cutoff and contains_any(job.title, self.ctx.settings.roles):
+                if (stamp and stamp >= self.ctx.cutoff and contains_any(job.title, self.ctx.settings.roles)
+                        and not (self.ctx.settings.remote and mode in ("onsite", "hybrid"))):
                     try:
                         detail = await self.get(url)
                         script = BeautifulSoup(detail.text, "html.parser").find("script", id="__NEXT_DATA__")
@@ -49,6 +55,10 @@ class Gupy(BaseCollector):
                                                ["description", "responsibilities", "prerequisites", "relevantExperiences"])
                         if description.strip():
                             job.description = description.strip()
+                        detail_mode = modes.get((info.get("workplaceType") or "").lower())
+                        if detail_mode:
+                            job.workplace = detail_mode
+                            job.is_remote = detail_mode == "remote"
                         job.location = ", ".join(filter(None, [info.get("addressCity"), info.get("addressState")])) or job.location
                     except Exception as error:
                         log.warning("gupy · detalhe indisponível · %s", safe_error(error))

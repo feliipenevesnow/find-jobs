@@ -9,7 +9,8 @@ from datetime import date, datetime, timedelta
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
-from src.collectors.base import BR
+from src.collectors.base import BR, content
+from src.core.forms import application_form
 
 
 INFOJOBS_BASE = "https://www.infojobs.com.br"
@@ -298,9 +299,9 @@ def _extrair_jsonld(sopa):
                 "company": _limpar(org.get("name") if isinstance(org, dict) else ""),
                 "location": local,
                 "job_url": url if url.startswith("http") else INFOJOBS_BASE + url,
+                "remote": item.get("jobLocationType") == "TELECOMMUTE",
                 "date_posted": publicada.strftime("%Y-%m-%d") if publicada else "",
-                "description": _limpar(BeautifulSoup(
-                    item.get("description") or "", "html.parser").get_text(" ")),
+                "description": content(item.get("description")),
                 "_via": "json-ld",
             })
     return vagas
@@ -371,7 +372,9 @@ def _extrair_cards(sopa, cidade_rotulo):
                         if a["href"].startswith("/") else a["href"]),
             "date_posted": publicada.isoformat() if publicada else "",
             "description": descricao,
-            "remote": "home office" in _norm(bloco) and "hibrido" not in _norm(bloco) and "presencial" not in _norm(bloco),
+            "remote": any(_norm(part) in {"home office", "100% home office", "remoto", "100% remoto"}
+                          for part in no_bloco.stripped_strings),
+            "form_url": application_form(content(str(no_bloco))) if "forms." in str(no_bloco) or "google.com/forms" in str(no_bloco) else None,
             "_via": "html",
         }
     return list(vagas.values())
@@ -478,7 +481,7 @@ def _vc_extrair_cards(html_texto):
                 break
 
         modelo = next((x for x in _VC_MODELOS if x in texto), "")
-        if not cidade and "Home Office" in texto:
+        if not cidade and modelo == "100% Home Office":
             cidade = "Remoto"
 
         # "São Paulo, SP" e não "São Paulo / SP": é o formato que o seu
@@ -512,6 +515,9 @@ def _vc_extrair_cards(html_texto):
             "description": _limpar(resumo)[:800],
             "level": nivel,
             "remote": modelo == "100% Home Office",
+            "workplace": {"Na empresa e Home Office": "hybrid", "Na empresa": "onsite",
+                          "100% Home Office": "remote"}.get(modelo, "unknown"),
+            "form_url": application_form(content(str(bloco))) if "forms." in str(bloco) or "google.com/forms" in str(bloco) else None,
         }
 
     return list(achadas.values())

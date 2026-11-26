@@ -1,17 +1,17 @@
 # Caçador de vagas júnior
 
-Um monitor local para encontrar vagas de entrada em desenvolvimento de software. Ele consulta sete fontes, compara as oportunidades com seu perfil e guarda o histórico no SQLite.
+Um monitor local de vagas de entrada em desenvolvimento de software para quem trabalha remotamente do Brasil. Ele cruza anúncios públicos com o perfil, dá prioridade a candidaturas por Google Forms e guarda o histórico no SQLite.
 
 ## Ver suas vagas de manhã
 
-No Windows, dê dois cliques em **Abrir vagas.cmd**. Ele abre o painel no navegador. Se ainda não houve coleta com alguma fonte disponível hoje, ele busca primeiro. O painel permite pesquisar por cargo, empresa ou tecnologia, ordenar por nota e abrir o anúncio original. O filtro inicial mostra vagas encontradas nos últimos sete dias.
+No Windows, dê dois cliques em **Abrir vagas.cmd**. Ele abre o painel no navegador. Se ainda não houve coleta com alguma fonte disponível hoje, ele busca primeiro. A ordenação inicial apresenta Google Forms primeiro e, dentro de cada grupo, as maiores notas locais. O filtro **Inscrição → Google Forms** mostra apenas essas oportunidades. O título de cada vaga abre o anúncio original.
 
 Para ler o histórico imediatamente, inclusive offline, abra `data/painel.html`. O cabeçalho informa a hora da última busca, quantos portais responderam e eventuais erros. Uma página já aberta mostra os resultados novos ao ser recarregada.
 
-Para instalar ou alterar a busca automática das **7h** no Agendador de Tarefas do Windows, execute na pasta do projeto:
+Para configurar as buscas automáticas da manhã e da noite no Agendador de Tarefas do Windows, execute na pasta do projeto.
 
 ```powershell
-& ".\Agendar vagas.ps1" -Horario 07:00
+& ".\Agendar vagas.ps1" -HorarioManha 08:00 -HorarioNoite 18:00
 ```
 
 O horário usa o relógio do Windows. A tarefa roda na sua sessão, com o computador ligado. Se perder o horário, o agendador tenta assim que a sessão estiver disponível. Abrir o painel pelo atalho também recupera a coleta do dia. Para fazer outra busca manual, execute `.\.venv\Scripts\python.exe main.py`. O painel e o banco ficam na pasta configurada para o histórico.
@@ -29,7 +29,26 @@ if (!(Test-Path -LiteralPath .env)) { Copy-Item -LiteralPath .env-example -Desti
 
 Faça a cópia do modelo apenas na configuração inicial. O projeto inclui o mesmo modelo com o nome convencional `.env.example`. No Linux ou macOS, crie o ambiente com `python3 -m venv .venv`, use `.venv/bin/python` nos comandos e copie o modelo com `cp .env-example .env`.
 
-O terminal mostra quantos anúncios cada fonte devolveu, quantas consultas falharam e quais oportunidades passaram pelo filtro, com nota e link. A prévia consulta a internet e trabalha com uma cópia em memória do histórico. Uma rodada com zero aprovadas é um resultado possível.
+O terminal e a seção **Fontes da última busca** do painel mostram leituras, aprovações e formulários por fonte. Um anúncio pode voltar em mais de uma consulta. As aprovações por fonte contam vagas distintas dentro daquela fonte. A prévia consulta a internet e trabalha com uma cópia em memória do histórico.
+
+## Onde o buscador procura
+
+| Origem | Como a busca funciona |
+| --- | --- |
+| Carreiras de empresas | A Amazon é consultada no site oficial de carreiras, com filtro para o Brasil. Greenhouse e Ashby fornecem os murais de empresas configuradas, como Canonical, Cloudflare, GitLab, Grupo QuintoAndar, VTEX, Sierra Studio e Supabase. A lista de empresas pode ser ampliada no YAML. |
+| Portais de vagas | Gupy, LinkedIn, Indeed, InfoJobs, Vagas.com e ProgramaThor cobrem anúncios nacionais. Himalayas pesquisa vagas de entrada abertas ao Brasil. Os feeds de programação de We Work Remotely trazem anúncios com as regiões aceitas. |
+| Comunidades | O buscador lê publicações de canais brasileiros de Telegram e comentários de empregadores em *Who is hiring?* do Hacker News. Também pesquisa inscrições com Forms em issues públicas além dos repositórios de vagas configurados. |
+| Web aberta | Consultas em português e inglês procuram formulários, carreiras e anúncios de empresas menores. O índice do Yahoo Brasil localiza páginas e o RSS do Bing assume em caso de bloqueio. Uma chave opcional em `BRAVE_SEARCH_API_KEY` seleciona a API de busca do Brave. A triagem usa o conteúdo da página de destino. |
+
+No Ashby, o campo `workplaceType` distingue remoto integral de híbrido. No Greenhouse, a data de publicação é `first_published`. No Himalayas, a data do feed identifica uma atualização e aparece assim no painel. [Ashby](https://developers.ashbyhq.com/docs/public-job-posting-api) · [Greenhouse](https://docs.greenhouse.io/job-board) · [Himalayas](https://himalayas.app/docs/remote-jobs-api) · [We Work Remotely](https://weworkremotely.com/remote-job-rss-feed)
+
+Nas páginas de empresas, o buscador lê os dados estruturados de vaga, incluindo modalidade, regiões aceitas e validade quando informadas. Nas demais páginas, procura um formulário ligado a uma oportunidade individual ou um anúncio datado com botão de candidatura. Páginas privadas, fora dos índices ou que exigem login podem limitar a cobertura. [Dados estruturados de vagas](https://developers.google.com/search/docs/appearance/structured-data/job-posting)
+
+## Como os formulários ganham prioridade
+
+O coletor procura links de candidatura `forms.gle` e `docs.google.com/forms` na página original, inclusive quando estão atrás de um botão. LinkedIn e Indeed também recebem consultas próprias por esses domínios na janela ampliada. O buscador guarda o link de inscrição e a origem. Pesquisa de satisfação, newsletter e formulários de edição ficam fora. A verificação apenas lê a página pública.
+
+Um formulário confirmado como aberto permite recuperar um anúncio publicado nos últimos **30 dias**. Um formulário descoberto diretamente, sem data de publicação, entra pela primeira observação no banco e recebe a indicação **Publicação sem data informada**. Para uma vaga datada na janela normal, se o site do formulário pedir login ou estiver indisponível, o painel identifica o link como **indicado no anúncio**. Vagas com inscrição exclusivamente em um formulário confirmado como encerrado saem da seleção. Formulários recentes do histórico são revisitados nas coletas.
 
 ## Seu perfil
 
@@ -40,11 +59,13 @@ Edite `config.yaml` para ajustar a busca ao seu perfil.
 | `search_terms` | Buscas enviadas a cada portal. Termos mais específicos reduzem a quantidade de anúncios irrelevantes. |
 | `roles`, `positive`, `blocked` | Cargos de interesse, indicadores de nível de entrada e termos que desclassificam a vaga. |
 | `excluded_areas` | Expressões de outras áreas que podem aparecer na mesma busca, como “programação de TV”. |
-| `stack`, `min_score` | Tecnologias e nota mínima. A nota local começa em 6,5, soma 0,7 por tecnologia e considera evidências adicionais, até 10 no total. Com IA, vale a nota do avaliador. |
-| `remote`, `cities` | Aceitação de remoto e cidades para híbrido ou presencial. A lista vazia permite qualquer cidade nas fontes brasileiras. O LinkedIn e o Indeed exigem confirmação de localização no Brasil para vagas presenciais, ou uma cidade configurada. |
+| `stack`, `min_score` | Tecnologias e nota mínima. A nota local começa em 6,5, soma 0,7 por tecnologia e considera evidências adicionais, até 10 no total. Essa nota controla a seleção mesmo com IA habilitada. |
+| `remote`, `cities` | Com `remote: true`, as regras exigem evidência de remoto integral e verificam restrições geográficas declaradas. Presença obrigatória prevalece sobre um selo remoto. `cities` é usado quando `remote: false`. |
 | `infojobs_cities` | Slugs de busca do InfoJobs. São Paulo é o exemplo inicial. |
-| `hours`, `results_per_search` | Janela padrão de 26 horas e limite de resultados por busca. As duas horas de sobreposição ajudam a cobrir atrasos entre as manhãs. |
+| `hours`, `results_per_search`, `forms_lookback_days` | A busca manual cobre 36 horas por padrão, com até 30 resultados por consulta. Formulários abertos têm uma janela ampliada. |
 | `sources`, `github_repos` | Fontes ativas e repositórios de vagas com issues públicas. |
+| `greenhouse_boards`, `ashby_boards` | Mapas entre o identificador público do mural e o nome da empresa. |
+| `community_channels`, `web_queries`, `web_pages_per_query` | Canais públicos do Telegram, pesquisas na web e número máximo de páginas originais abertas por pesquisa. |
 | `ai_budget` | Orçamento local compartilhado entre as buscas que usam o mesmo SQLite. Ajuste chamadas e tokens por 24 horas e tokens por minuto. |
 | `resume`, `database` | Arquivo de currículo e caminho do SQLite, relativos à pasta do YAML. |
 
@@ -62,16 +83,16 @@ O painel mostra as evidências selecionadas no currículo. Quando a análise rem
 
 ## Aderência por IA
 
-Para dar nota às vagas, o modelo recomendado é o **Gemini Decision 1**. Ele classifica a aderência ao perfil, a senioridade e possíveis lacunas na mesma chamada, com zero tokens de saída. Em 25/11/2026, o Google publicava **10.000 chamadas por dia, 200 chamadas por minuto e 50.000 tokens por minuto** no plano gratuito. A disponibilidade efetiva depende do projeto. [Modelo e preços](https://ai.google.dev/gemini-api/docs/models/gemini-decision-1#pricing) · [Limites oficiais](https://ai.google.dev/gemini-api/docs/rate-limits#gemini-decision)
+O Gemini configurado faz uma segunda leitura das finalistas. Ele indica dúvidas sobre requisitos, nível e competências. O parecer fica separado da nota local. A vaga continua visível se o modelo der nota zero, errar a senioridade, responder em formato inválido ou esgotar a cota. As cotas do serviço dependem do projeto. [Limites oficiais](https://ai.google.dev/gemini-api/docs/rate-limits)
 
 1. Abra o Google AI Studio e crie uma chave em um projeto que aparece como **Free**, sem faturamento vinculado. [Criar chave](https://aistudio.google.com/apikey) · [Consultar cotas da conta](https://aistudio.google.com/rate-limit)
 2. No `.env`, use `AI_PROVIDER=gemini`, `AI_MODEL=gemini-decision-1` e cole a chave depois de `GEMINI_API_KEY=`. A busca funciona por regras enquanto a chave estiver vazia. Para usar sempre as regras, escolha `AI_PROVIDER=none`.
 3. Revise `curriculo.local.md` antes da primeira análise remota. Use uma versão com competências e experiências descritas sem identificar pessoas ou clientes. O serviço gratuito do Google pode usar o conteúdo enviado para melhorar os produtos. [Termos do Gemini](https://ai.google.dev/gemini-api/terms)
 4. Rode `.\.venv\Scripts\python.exe main.py --hours 24` para coletar e analisar as vagas. Consulte o consumo local a qualquer momento com `.\.venv\Scripts\python.exe main.py --uso-ia`.
 
-**Como a cota é usada.** O caçador aplica as regras de cargo, nível e localização antes da IA. Cada chamada inclui até 2.600 caracteres da descrição, 1.050 do perfil e até três evidências. O Gemini recebe esses trechos uma vez para responder às perguntas sobre a vaga. O programa reutiliza a análise quando o conteúdo enviado e o modelo coincidem. Na prévia com `--dry-run`, ele consulta as análises remotas já salvas e usa as regras para vagas inéditas. [Como o Google contabiliza as perguntas](https://ai.google.dev/gemini-api/docs/decisions-api#multiple-questions)
+O caçador termina a coleta, aplica as regras e elimina duplicatas antes de selecionar finalistas. Primeiro vêm os formulários, com preferência por inscrições verificadas, depois a aderência local. Descrições muito curtas ou sem requisitos e competências aproveitáveis ficam só com as regras. Uma chamada leva até 2.600 caracteres da descrição, 1.050 do perfil e três evidências. Os prompts tratam anúncios como dados externos e pedem que o modelo sinalize incertezas. A análise é reutilizada quando o modelo e o conteúdo da requisição coincidem. A prévia com `--dry-run` usa o cache e dispensa novas chamadas.
 
-O orçamento inicial do aplicativo é de **1.000 chamadas e 1.000.000 de tokens em 24 horas**, com **25.000 tokens por minuto**. Vale o primeiro limite atingido. O programa reserva uma estimativa antes da chamada e atualiza o total quando recebe o consumo do provedor. Se o serviço pedir uma pausa ou o orçamento diário acabar, as próximas vagas seguem pela avaliação local e recebem a marca `[Análise IA indisponível]`. O comando `--uso-ia` mostra esse histórico. O painel do Google inclui também o uso do mesmo projeto por outras instalações e aplicativos.
+O orçamento configurado é de **3 novos pareceres por rodada, 6 chamadas e 24.000 tokens em 24 horas**, com **12.000 tokens por minuto**. As rodadas que usam o mesmo banco compartilham os limites. O programa reserva uma estimativa antes da chamada e atualiza o total quando recebe o consumo do provedor. Ao atingir um limite, a busca pública e a triagem local prosseguem. O comando `--uso-ia` mostra o consumo registrado neste computador.
 
 | `AI_PROVIDER` | Configuração no `.env` |
 | --- | --- |
@@ -92,7 +113,7 @@ Use `--skip-ai` para aplicar apenas as regras nessa rodada.
 
 Substitua `42` pelo ID exibido. Os estados disponíveis são `nova`, `salva`, `candidatado`, `entrevista` e `descartada`. A lista do terminal traz as últimas 50 oportunidades aprovadas. O painel permite consultar todo o histórico e mostra o estado de cada candidatura.
 
-O SQLite reúne anúncios repetidos pela URL ou pela combinação de empresa e título. Uma vaga aprovada continua disponível ao envelhecer. Use `main.py --painel` para reconstruir a página a partir do banco.
+O SQLite reúne anúncios repetidos por URL e cruza publicações compatíveis de outras fontes. O histórico preserva os estados de candidatura. Ao aplicar o novo perfil, as aprovações antigas passam novamente pelas regras locais, inclusive vagas que a IA havia reprovado. Use `main.py --painel` para reconstruir a página a partir do banco.
 
 ## Testes e referências
 

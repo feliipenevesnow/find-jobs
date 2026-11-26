@@ -9,7 +9,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pydantic import AwareDatetime, BaseModel, Field, computed_field, field_validator
 
 Status = Literal["nova", "salva", "candidatado", "entrevista", "descartada"]
-Precision = Literal["timestamp", "day", "native", "discovery", "unknown"]
+Precision = Literal["timestamp", "day", "native", "discovery", "first_seen", "updated", "unknown"]
+Workplace = Literal["unknown", "remote", "hybrid", "onsite"]
 
 
 def plain(text: str) -> str:
@@ -45,6 +46,8 @@ class JobDetails(BaseModel):
     title: str = Field(min_length=1)
     location: str = ""
     is_remote: bool = False
+    workplace: Workplace = "unknown"
+    applicant_regions: list[str] = Field(default_factory=list)
     source: str
     description: str = ""
     level: str = ""
@@ -54,6 +57,10 @@ class JobPosting(JobDetails):
     company: str = ""
     url: str
     published_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+    form_url: str | None = None
+    form_status: Literal["listed", "open", "closed"] = "listed"
+    form_checked_at: AwareDatetime | None = None
     precision: Precision = "unknown"
     salary: str = ""
     status: Status = "nova"
@@ -62,6 +69,20 @@ class JobPosting(JobDetails):
     @classmethod
     def clean_url(cls, value: str) -> str:
         return canonical_url(value)
+
+    @field_validator("form_url")
+    @classmethod
+    def clean_form(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from src.core.forms import google_form_url
+        if url := google_form_url(value):
+            return url
+        raise ValueError("Link público de Google Forms inválido")
+
+    @property
+    def active_form(self) -> str | None:
+        return self.form_url if self.form_status != "closed" else None
 
     @computed_field
     @property

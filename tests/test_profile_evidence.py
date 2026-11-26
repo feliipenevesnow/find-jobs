@@ -74,5 +74,5 @@ def test_ai_preserves_and_receives_selected_facts(job, monkeypatch):
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             result = await assess(client, "ollama", "Perfil", job, decision)
-            assert result.score == 7.5 and result.evidence == [proof]
+            assert result.analysis.score == 7.5 and result.score == decision.score and result.evidence == [proof]
     asyncio.run(run())
